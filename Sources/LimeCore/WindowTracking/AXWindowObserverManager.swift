@@ -51,8 +51,19 @@ public protocol AXWindowObserverManager: AnyObject, Sendable {
     /// observed event indicates the window state may have changed.
     func start(deliveryQueue: DispatchQueue, onChange: @escaping @Sendable () -> Void)
 
+    /// Optional second-channel hook fired on focused-window-changed events
+    /// only. Lets WindowTracker take a fast path that updates focus state
+    /// immediately (no enumeration debounce) so border colour swaps land
+    /// within a frame on hotkey-driven within-app cycling. Called in
+    /// addition to `onChange`.
+    func setOnFocusChange(_ handler: @escaping @Sendable () -> Void)
+
     /// Stop observing and release every AXObserver.
     func stop()
+}
+
+extension AXWindowObserverManager {
+    public func setOnFocusChange(_ handler: @escaping @Sendable () -> Void) {}
 }
 
 /// No-op manager used in tests + when the AX bridge is unavailable.
@@ -67,6 +78,7 @@ public final class RealAXWindowObserverManager: AXWindowObserverManager, @unchec
     private var perApp: [pid_t: AXObserver] = [:]
     private var deliveryQueue: DispatchQueue?
     private var onChange: (@Sendable () -> Void)?
+    private var onFocusChange: (@Sendable () -> Void)?
     private var launchObs: NSObjectProtocol?
     private var terminateObs: NSObjectProtocol?
 
@@ -142,6 +154,12 @@ public final class RealAXWindowObserverManager: AXWindowObserverManager, @unchec
         }
     }
 
+    public func setOnFocusChange(_ handler: @escaping @Sendable () -> Void) {
+        installQueue.async { [weak self] in
+            self?.onFocusChange = handler
+        }
+    }
+
     public func stop() {
         let nc = NSWorkspace.shared.notificationCenter
         if let t = launchObs { nc.removeObserver(t); launchObs = nil }
@@ -149,6 +167,7 @@ public final class RealAXWindowObserverManager: AXWindowObserverManager, @unchec
         installQueue.async { [weak self] in
             self?.perApp.removeAll()
             self?.onChange = nil
+            self?.onFocusChange = nil
         }
     }
 
@@ -249,6 +268,16 @@ public final class RealAXWindowObserverManager: AXWindowObserverManager, @unchec
         if notification == kAXWindowCreatedNotification as String {
             let context = Unmanaged.passUnretained(self).toOpaque()
             Self.subscribeWindow(observer: observer, element: element, context: context)
+        }
+
+        // Fast path: focus events bypass the enumeration debounce and feed
+        // a separate handler that just refreshes `focusedWindowID`. This
+        // makes the active/inactive border colour swap land within a frame
+        // when cycling between same-app windows via hotkeys.
+        if notification == kAXFocusedWindowChangedNotification as String
+            || notification == kAXApplicationActivatedNotification as String,
+           let queue = deliveryQueue, let cb = onFocusChange {
+            queue.async { cb() }
         }
 
         // Every notification we registered for is by construction relevant

@@ -45,13 +45,27 @@ public struct VersionInfo: Codable, Sendable, Equatable {
 }
 
 extension Lime {
-    /// Resolves `~/Library/Application Support/LimeLight/...` paths.
+    /// Resolves a path relative to the user's home directory.
     public static func userPath(_ relative: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return (home as NSString).appendingPathComponent(relative)
     }
 
     public static var resolvedSocketPath: String { userPath(socketRelativePath) }
-    public static var resolvedConfigPath: String { userPath(configRelativePath) }
-    public static var resolvedSchemaPath: String { userPath(schemaRelativePath) }
+
+    /// Honours `$XDG_CONFIG_HOME` when set (so users sharing dotfile configs
+    /// across machines pick up the right location), else `~/.config/limelight/`.
+    public static var resolvedConfigPath: String {
+        if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
+            return (xdg as NSString).appendingPathComponent("limelight/config.jsonc")
+        }
+        return userPath(configRelativePath)
+    }
+
+    public static var resolvedSchemaPath: String {
+        if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
+            return (xdg as NSString).appendingPathComponent("limelight/config.schema.json")
+        }
+        return userPath(schemaRelativePath)
+    }
 }

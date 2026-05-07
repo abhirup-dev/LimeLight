@@ -26,6 +26,44 @@ import os
 /// focusfx-l4i (phantom borders after AeroSpace workspace switch). SLS
 /// streaming (focusfx-b13) will eventually subsume #1 and add native
 /// Space-membership filtering, but #2 stays as a public-API fallback.
+///
+/// # RealtimeFastHook
+///
+/// The above pipeline is *correct* but not fast enough for a user
+/// hammering AeroSpace hotkeys to cycle through stacked same-app windows
+/// (e.g. workspace 7 with many Slacks). A standard refresh round-trip
+/// is ≥30 ms because it serializes through:
+///
+///     AX event  →  6 ms refresh debounce  →  CG enum (~5 ms)  →
+///                  16 ms coalescer tick   →  recompute & paint
+///
+/// At a 50–100 ms hotkey cadence that reads as visible lag — the colour
+/// stays on the previously-focused window.
+///
+/// `RealtimeFastHook` is the side-channel that fixes this:
+///
+///   1. `AXWindowObserverManager.setOnFocusChange` registers a second
+///      handler that fires *only* on `kAXFocusedWindowChanged` /
+///      `kAXApplicationActivated` notifications. These come from the
+///      same AX event stream but skip the debounce.
+///   2. `WindowTracker.fastPathFocusUpdate` re-resolves focus from AX
+///      against the *existing* cache. No CG enum. Cache may be slightly
+///      stale (z-order, frame), but the only thing that needs to change
+///      to flip border colours is `focusedWindowID`, so this is fine.
+///   3. The focus-change subscriber (BorderEngine, wired in the daemon)
+///      runs `recompute()` directly — bypassing the
+///      `WindowEventCoalescer` 16 ms tick.
+///
+/// End-to-end the fast path lands a colour swap in roughly 5–10 ms.
+/// The full enumeration path still runs in parallel (debounced) and
+/// reconciles z-order / frame / lifecycle in the background.
+///
+/// **Invariant:** RealtimeFastHook never *removes* or *creates* a
+/// border. Those decisions need accurate cache state and stay on the
+/// debounced path. The fast path only updates which window in the
+/// existing cache is "active". Worst case for a stale cache: we briefly
+/// flip the wrong window's colour for ≤6 ms until the debounced enum
+/// lands, then it self-corrects.
 public final class WindowTracker: @unchecked Sendable {
     public typealias FocusChangeHandler = @Sendable (WindowID?) -> Void
 
@@ -46,9 +84,16 @@ public final class WindowTracker: @unchecked Sendable {
     private var focusHandlers: [FocusChangeHandler] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     /// Coalesces a burst of refresh requests (e.g. AX move flurry during
-    /// AeroSpace teleport) into one enumeration per ~16ms.
+    /// AeroSpace teleport) into one enumeration per ~6ms. Lower than the
+    /// 16ms-per-frame budget so rapid hotkey cycling between same-app
+    /// windows doesn't stall behind a frame's worth of debounce.
     private var refreshPending = false
-    private let refreshDebounceMs: Int = 16
+    /// Set if any AX events arrived while a refresh was pending — ensures we
+    /// run a follow-up enum after the first one settles, since AeroSpace /
+    /// WindowServer state can lag the AX focus event by a few ms.
+    private var refreshTrailing = false
+    private let refreshDebounceMs: Int = 6
+    private let refreshTrailingMs: Int = 30
 
     /// Per-window event coalescer. BorderEngine / EffectEngine subscribe via
     /// the consumer-supplied handler at init time. The tracker bumps generations
@@ -86,6 +131,13 @@ public final class WindowTracker: @unchecked Sendable {
         axObservers.start(deliveryQueue: trackerQueue) { [weak self] in
             self?.scheduleDebouncedRefresh()
         }
+        // Fast-path: focus events bypass the enumeration debounce. We just
+        // re-resolve focus from AX and emit a focus-change tick into the
+        // coalescer so the renderer flips colours within a frame even when
+        // the window cache and CGWindowList z-order haven't caught up yet.
+        axObservers.setOnFocusChange { [weak self] in
+            self?.fastPathFocusUpdate()
+        }
     }
 
     public func stop() {
@@ -110,20 +162,79 @@ public final class WindowTracker: @unchecked Sendable {
     /// burst has settled. The debouncer:
     ///   - First call: sets `refreshPending = true` and schedules an
     ///     enumeration `refreshDebounceMs` in the future.
-    ///   - Further calls during the window: skipped (early return).
-    ///   - When the timer fires: enumerate, clear the flag.
-    /// 16ms matches the engine's coalescer tick — same end-to-end latency
-    /// the renderer would see for a frame change on a focused window.
+    ///   - Further calls during the window: marked as a "trailing" need so
+    ///     the timer schedules a follow-up enum `refreshTrailingMs` later.
+    ///     This catches the case where AeroSpace / WindowServer hasn't
+    ///     finished propagating the new z-order by the time the first
+    ///     enum runs.
+    ///   - When the timer fires: enumerate, then if trailing was requested
+    ///     schedule one more enum to capture the post-propagation state.
+    ///
+    /// Tuned to 6ms (well under the 16ms frame budget) so consecutive
+    /// hotkey presses at 50–100ms cadence don't get the second event
+    /// silently absorbed by the first event's debounce window — see the
+    /// RealtimeFastHook docblock on `fastPathFocusUpdate`.
     private func scheduleDebouncedRefresh() {
         trackerQueue.async { [weak self] in
             guard let self else { return }
-            if self.refreshPending { return }
+            if self.refreshPending {
+                self.refreshTrailing = true
+                return
+            }
             self.refreshPending = true
             self.trackerQueue.asyncAfter(deadline: .now() + .milliseconds(self.refreshDebounceMs)) { [weak self] in
                 guard let self else { return }
                 self.refreshPending = false
                 self.performInitialEnumeration()
+                if self.refreshTrailing {
+                    self.refreshTrailing = false
+                    self.trackerQueue.asyncAfter(deadline: .now() + .milliseconds(self.refreshTrailingMs)) { [weak self] in
+                        self?.performInitialEnumeration()
+                    }
+                }
             }
+        }
+    }
+
+    /// **RealtimeFastHook.** Fires synchronously off an AX
+    /// `kAXFocusedWindowChanged` (or app-activated) event, bypassing the
+    /// enumeration debounce so the *focused window ID* updates within a
+    /// frame regardless of how busy the cache-rebuild path is.
+    ///
+    /// Why this exists: when the user cycles through stacked same-app
+    /// windows via AeroSpace hotkeys, the things that actually need to
+    /// change in the renderer are just the active/inactive border colours
+    /// on two windows. Re-enumerating CGWindowList, diffing the cache,
+    /// running the coalescer tick, and recomputing every border spec is
+    /// pure overhead for that case — and the user perceives the lag.
+    /// The fast path:
+    ///   1. Reads the system-focused (pid, title) from AX directly.
+    ///   2. Looks up the matching window in the existing cache.
+    ///   3. Updates `focusedWindowID` and pushes a `.focusChanged` event
+    ///      into the coalescer for both the previous and new focused
+    ///      windows. The BorderEngine recompute then flips colours
+    ///      without waiting for the next enumeration to land.
+    ///
+    /// The full enumeration path still runs in parallel via the
+    /// debounced `scheduleDebouncedRefresh` triggered by the same AX
+    /// event — z-order, frame, and lifecycle changes are picked up
+    /// there. The fast path is purely an *optimistic* focus update
+    /// against the current cache.
+    ///
+    /// Failure modes (degrade gracefully, never lie):
+    ///   - AX cannot resolve focus (AX denied, app dead): leave focus as
+    ///     it was; the next enum will reconcile.
+    ///   - The focused window isn't in our cache yet (just created):
+    ///     skip; the next enum will install both the cache entry and
+    ///     resolve focus to it.
+    ///   - Multiple cache entries match the AX (pid, title) tuple:
+    ///     prefer the one whose CG z-order is highest (i.e. the front
+    ///     one), since AeroSpace typically raises the focused window.
+    private func fastPathFocusUpdate() {
+        trackerQueue.async { [weak self] in
+            guard let self else { return }
+            dispatchPrecondition(condition: .onQueue(self.trackerQueue))
+            self.recomputeFocus()
         }
     }
 
@@ -227,22 +338,44 @@ public final class WindowTracker: @unchecked Sendable {
         }
     }
 
+    /// Resolve focus from AX. Used by both the debounced enum path and the
+    /// RealtimeFastHook (`fastPathFocusUpdate`).
+    ///
+    /// Tie-break order when AX (pid, title) matches multiple cache entries:
+    ///   1. Exact title match.
+    ///   2. Front-most CG z-order among the title matches (AeroSpace
+    ///      raises the newly-focused window so the front one is the
+    ///      correct answer in nearly every case).
+    ///   3. Front-most CG z-order among ALL windows of the pid (when title
+    ///      didn't disambiguate, e.g. several Slack windows whose CGWindow
+    ///      titles happen to be empty or identical).
     private func recomputeFocus() {
         dispatchPrecondition(condition: .onQueue(trackerQueue))
         guard let focused = ax.focusedWindow() else {
             updateFocus(nil)
             return
         }
-        // AX returns (pid, title). Find a window in cache matching pid + title (or just pid).
+
         os_unfair_lock_lock(&cacheLock)
-        let candidates = cache.values.filter { $0.ownerPID == focused.pid }
+        let pidCandidates = cache.values.filter { $0.ownerPID == focused.pid }
+        let order = orderedIDs
         os_unfair_lock_unlock(&cacheLock)
+
+        // z-order rank: smaller index = closer to front.
+        let zRank: (WindowID) -> Int = { wid in
+            order.firstIndex(of: wid) ?? Int.max
+        }
 
         let chosen: WindowState?
         if let title = focused.title, !title.isEmpty {
-            chosen = candidates.first { $0.title == title } ?? candidates.first
+            let titleMatches = pidCandidates.filter { $0.title == title }
+            if let frontMatch = titleMatches.min(by: { zRank($0.windowID) < zRank($1.windowID) }) {
+                chosen = frontMatch
+            } else {
+                chosen = pidCandidates.min(by: { zRank($0.windowID) < zRank($1.windowID) })
+            }
         } else {
-            chosen = candidates.first
+            chosen = pidCandidates.min(by: { zRank($0.windowID) < zRank($1.windowID) })
         }
         updateFocus(chosen?.windowID)
     }

@@ -51,13 +51,16 @@ final class AXObserverIntegrationTests: XCTestCase {
         _ = waitForCount(tracker, 1)
         let baseline = server.callCount
 
-        // Fire ten AX events well within the 16ms debounce window.
+        // Fire ten AX events well within the 6ms debounce window.
         for _ in 0..<10 { observers.fire() }
 
-        // Wait for the debounce to fire + a margin.
+        // Wait for the debounce + the trailing 30ms enum + margin.
         Thread.sleep(forTimeInterval: 0.1)
         let delta = server.callCount - baseline
-        XCTAssertEqual(delta, 1, "ten AX events in <16ms should collapse to ONE re-enumeration, got \(delta)")
+        // RealtimeFastHook contract: a burst collapses to ONE primary enum +
+        // ONE trailing enum (covers the case where AeroSpace / WindowServer
+        // hadn't propagated the new state by the time the primary enum ran).
+        XCTAssertEqual(delta, 2, "burst should collapse to one primary + one trailing enum, got \(delta)")
     }
 
     func testStopReleasesAXObservers() {

@@ -28,8 +28,13 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
         promptAccessibilityIfNeeded()
         startBorderEngine()
         windowTracker.start()
-        windowTracker.onFocusChange { wid in
+        // RealtimeFastHook: focus changes drive a recompute directly without
+        // waiting for the WindowEventCoalescer's 16ms tick. Cycling between
+        // same-app windows then flips border colours within ~10ms instead of
+        // the 30–50ms baseline of the debounced enumeration path.
+        windowTracker.onFocusChange { [weak self] wid in
             Log.tracker.debug("focus changed -> \(wid.map { "\($0)" } ?? "nil", privacy: .public)")
+            self?.borderEngine?.recompute()
         }
         Log.core.info("LimeLight daemon ready")
     }

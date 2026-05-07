@@ -3,9 +3,18 @@ import Foundation
 
 /// Owns one borderless overlay `NSWindow` per tracked target. Applies
 /// renderer-actionable diffs computed by `BorderEngineLogic` on the main
-/// thread. Glow / gradient / background fill are explicitly NOT implemented
-/// in v0 — see follow-up `focusfx-kxs`. Solid color (round / square /
-/// uniform) only.
+/// thread.
+///
+/// Style support (focusfx-kxs):
+///   - solid    : plain `CALayer.borderColor` stroke.
+///   - glow     : same stroke + outer `shadow*` halo. Window frame is
+///                expanded outward so the halo isn't clipped.
+///   - gradient : `CAGradientLayer` masked by a `CAShapeLayer` rounded-rect
+///                stroke, so the gradient is visible only along the stroke.
+///
+/// `BordersConfig.background.enabled` is intentionally a no-op here —
+/// painting a fill *under* a real app window needs SLSReorderWindow,
+/// tracked in focusfx-007 (blocked on focusfx-b13).
 @MainActor
 public final class BorderRenderer {
     private var windows: [BorderID: BorderWindow] = [:]
@@ -40,20 +49,34 @@ public final class BorderRenderer {
     public var liveWindowCount: Int { windows.count }
 }
 
-/// Single borderless overlay window backed by a CALayer with `borderColor`,
-/// `borderWidth`, and `cornerRadius`. No `CADisplayLink` / no `Timer` /
-/// no animation — purely event-driven from coalescer ticks.
+/// Single borderless overlay window. Layer composition depends on the spec:
+///   - solid / glow : one `CALayer` does the stroke; glow adds outer shadow.
+///   - gradient     : a `CAGradientLayer` covers the bounds, masked by a
+///                    `CAShapeLayer` whose stroked path is the rounded
+///                    rectangle border. The mask makes the gradient appear
+///                    only along the stroke.
+///
+/// The window is sized to `spec.frame` for solid/gradient, but for glow it
+/// is inset outward by `glowOuterInset` so the shadow halo isn't clipped
+/// at the edges of the overlay window. We always re-evaluate the layer
+/// stack on a style/colour change rather than animating between modes.
 @MainActor
 private final class BorderWindow {
     private let window: NSWindow
-    private let borderLayer: CALayer
+    /// Stroke layer for solid / glow; nil while in gradient mode.
+    private var strokeLayer: CALayer?
+    /// Gradient layer for gradient mode; nil otherwise.
+    private var gradientLayer: CAGradientLayer?
+    /// Mask for gradient mode that turns the filled gradient into a stroke.
+    private var gradientMask: CAShapeLayer?
     private var currentSpec: BorderSpec
 
     init(spec: BorderSpec) {
         self.currentSpec = spec
 
+        let outerFrame = Self.outerFrame(for: spec)
         let w = NSWindow(
-            contentRect: spec.frame,
+            contentRect: outerFrame,
             styleMask: .borderless,
             backing: .buffered,
             defer: true
@@ -72,20 +95,13 @@ private final class BorderWindow {
         // of focusfx-b13 (SLS streaming) where Space IDs become available.
         w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
 
-        let content = NSView(frame: NSRect(origin: .zero, size: spec.frame.size))
+        let content = NSView(frame: NSRect(origin: .zero, size: outerFrame.size))
         content.wantsLayer = true
+        content.layer?.masksToBounds = false
         w.contentView = content
 
-        let layer = CALayer()
-        layer.frame = content.bounds
-        layer.backgroundColor = NSColor.clear.cgColor
-        content.layer?.addSublayer(layer)
-
         self.window = w
-        self.borderLayer = layer
-
-        applyColor(spec.color)
-        applyShape(width: spec.width, style: spec.style, frameSize: spec.frame.size)
+        rebuildLayers(for: spec, in: content)
     }
 
     func show() {
@@ -103,53 +119,163 @@ private final class BorderWindow {
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
 
-        if spec.frame != currentSpec.frame {
-            window.setFrame(spec.frame, display: false, animate: false)
+        let prev = currentSpec
+        let modeChanged = colorMode(prev.color) != colorMode(spec.color)
+        let frameChanged = spec.frame != prev.frame
+        let glowChanged = (prev.color.isGlow || spec.color.isGlow) && prev.color != spec.color
+
+        if modeChanged || (glowChanged && frameChanged == false) {
+            // Outer-frame size depends on whether glow halo padding is needed,
+            // so we may need to resize even when spec.frame is unchanged.
+            window.setFrame(Self.outerFrame(for: spec), display: false, animate: false)
             if let view = window.contentView {
-                view.frame = NSRect(origin: .zero, size: spec.frame.size)
-                borderLayer.frame = view.bounds
+                view.frame = NSRect(origin: .zero, size: window.frame.size)
+            }
+            if let view = window.contentView {
+                rebuildLayers(for: spec, in: view)
+            }
+            currentSpec = spec
+            return
+        }
+
+        if frameChanged {
+            window.setFrame(Self.outerFrame(for: spec), display: false, animate: false)
+            if let view = window.contentView {
+                view.frame = NSRect(origin: .zero, size: window.frame.size)
             }
         }
-        if spec.color != currentSpec.color {
-            applyColor(spec.color)
-        }
-        if spec.width != currentSpec.width || spec.style != currentSpec.style
-            || spec.frame.size != currentSpec.frame.size {
-            applyShape(width: spec.width, style: spec.style, frameSize: spec.frame.size)
+        if frameChanged
+            || spec.width != prev.width
+            || spec.style != prev.style
+            || spec.color != prev.color {
+            applyStyle(for: spec)
         }
         currentSpec = spec
     }
 
-    private func applyColor(_ spec: ColorSpec) {
-        // v0: solid only. glow / gradient land in focusfx-kxs.
-        let rgba: ColorSpec.RGBA
-        switch spec {
-        case .solid(let v): rgba = v
-        case .glow(let v): rgba = v       // fallback to solid for v0
-        case .gradient(_, let start, _): rgba = start
+    // MARK: - layer composition
+
+    private func rebuildLayers(for spec: BorderSpec, in content: NSView) {
+        content.layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
+        strokeLayer = nil
+        gradientLayer = nil
+        gradientMask = nil
+
+        switch spec.color {
+        case .solid, .glow:
+            let layer = CALayer()
+            layer.masksToBounds = false
+            content.layer?.addSublayer(layer)
+            strokeLayer = layer
+        case .gradient:
+            let mask = CAShapeLayer()
+            mask.fillColor = NSColor.clear.cgColor
+            mask.strokeColor = NSColor.white.cgColor
+            let grad = CAGradientLayer()
+            grad.mask = mask
+            content.layer?.addSublayer(grad)
+            gradientLayer = grad
+            gradientMask = mask
         }
-        borderLayer.borderColor = CGColor(srgbRed: rgba.r, green: rgba.g, blue: rgba.b, alpha: rgba.a)
+        applyStyle(for: spec)
     }
 
-    private func applyShape(width: Double, style: BordersConfig.Style, frameSize: CGSize) {
-        borderLayer.borderWidth = CGFloat(width)
-        borderLayer.cornerRadius = {
-            switch style {
-            case .round:
-                return min(12, min(frameSize.width, frameSize.height) / 2)
-            case .square:
-                return 0
-            case .uniform:
-                // PLAN.md treats uniform as square-with-rounded-corners-disabled for now.
-                return 0
-            }
-        }()
-        // Inset the layer by half-width so the stroke sits centered on the window edge.
-        let inset = CGFloat(width) / 2
-        borderLayer.frame = CGRect(
-            x: inset, y: inset,
-            width: max(0, frameSize.width - 2 * inset),
-            height: max(0, frameSize.height - 2 * inset)
+    private func applyStyle(for spec: BorderSpec) {
+        let outerSize = Self.outerFrame(for: spec).size
+        let halo = Self.glowHaloRadius(for: spec)
+        let inner = CGRect(
+            x: halo, y: halo,
+            width: max(0, outerSize.width - 2 * halo),
+            height: max(0, outerSize.height - 2 * halo)
         )
+        let cornerRadius = Self.cornerRadius(style: spec.style, frameSize: spec.frame.size)
+        let halfWidth = CGFloat(spec.width) / 2
+
+        switch spec.color {
+        case .solid(let rgba):
+            guard let layer = strokeLayer else { return }
+            layer.frame = inner.insetBy(dx: halfWidth, dy: halfWidth)
+            layer.borderWidth = CGFloat(spec.width)
+            layer.borderColor = Self.cgColor(rgba)
+            layer.cornerRadius = cornerRadius
+            layer.shadowOpacity = 0
+            layer.shadowRadius = 0
+
+        case .glow(let rgba):
+            guard let layer = strokeLayer else { return }
+            layer.frame = inner.insetBy(dx: halfWidth, dy: halfWidth)
+            layer.borderWidth = CGFloat(spec.width)
+            layer.borderColor = Self.cgColor(rgba)
+            layer.cornerRadius = cornerRadius
+            layer.shadowColor = Self.cgColor(rgba)
+            layer.shadowOffset = .zero
+            layer.shadowRadius = halo
+            layer.shadowOpacity = Float(rgba.a)
+
+        case .gradient(let axis, let start, let end):
+            guard let grad = gradientLayer, let mask = gradientMask else { return }
+            grad.frame = inner
+            grad.colors = [Self.cgColor(start), Self.cgColor(end)]
+            switch axis {
+            case .topLeftToBottomRight:
+                grad.startPoint = CGPoint(x: 0, y: 1)
+                grad.endPoint = CGPoint(x: 1, y: 0)
+            case .topRightToBottomLeft:
+                grad.startPoint = CGPoint(x: 1, y: 1)
+                grad.endPoint = CGPoint(x: 0, y: 0)
+            }
+            // Stroke path inset by half-width so the line sits centered on
+            // the rounded rectangle's edge — same as the solid case.
+            let strokeRect = CGRect(origin: .zero, size: inner.size).insetBy(dx: halfWidth, dy: halfWidth)
+            mask.frame = grad.bounds
+            mask.path = CGPath(
+                roundedRect: strokeRect,
+                cornerWidth: max(0, cornerRadius - halfWidth),
+                cornerHeight: max(0, cornerRadius - halfWidth),
+                transform: nil
+            )
+            mask.lineWidth = CGFloat(spec.width)
+        }
     }
+
+    // MARK: - geometry helpers
+
+    /// `glow` needs the overlay window slightly larger than the target frame
+    /// so the shadow halo isn't clipped at the window edge. The amount is
+    /// proportional to stroke width but capped — large halos waste GPU time
+    /// and look like a fog rather than a frame.
+    private static func glowHaloRadius(for spec: BorderSpec) -> CGFloat {
+        guard case .glow = spec.color else { return 0 }
+        return min(CGFloat(spec.width) * 2, 18)
+    }
+
+    private static func outerFrame(for spec: BorderSpec) -> CGRect {
+        let halo = glowHaloRadius(for: spec)
+        return spec.frame.insetBy(dx: -halo, dy: -halo)
+    }
+
+    private static func cornerRadius(style: BordersConfig.Style, frameSize: CGSize) -> CGFloat {
+        switch style {
+        case .round:
+            return min(12, min(frameSize.width, frameSize.height) / 2)
+        case .square, .uniform:
+            return 0
+        }
+    }
+
+    private static func cgColor(_ rgba: ColorSpec.RGBA) -> CGColor {
+        CGColor(srgbRed: rgba.r, green: rgba.g, blue: rgba.b, alpha: rgba.a)
+    }
+
+    private func colorMode(_ c: ColorSpec) -> Int {
+        switch c {
+        case .solid: return 0
+        case .glow: return 1
+        case .gradient: return 2
+        }
+    }
+}
+
+private extension ColorSpec {
+    var isGlow: Bool { if case .glow = self { return true } else { return false } }
 }
