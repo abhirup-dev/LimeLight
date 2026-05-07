@@ -9,20 +9,68 @@ public final class BorderEngine: @unchecked Sendable {
     @MainActor private let renderer = BorderRenderer()
     private let queue = DispatchQueue(label: "dev.abhirup.lime.borders", qos: .userInitiated)
     private var lastDesired: [WindowID: BorderSpec] = [:]
+    private var overrides: BorderRuntimeOverrides = .empty
 
     public init(tracker: WindowTracker, configStore: ConfigStore) {
         self.tracker = tracker
         self.configStore = configStore
     }
 
+    /// Apply a runtime override (from `borders.style` IPC). Triggers a recompute.
+    public func applyStyleRequest(_ req: BordersStyleRequest) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.overrides.apply(req)
+            self.recomputeOnQueue()
+        }
+    }
+
+    /// Force borders globally on/off without touching other override fields.
+    public func setEnabled(_ enabled: Bool) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.overrides.global.enabled = enabled
+            self.recomputeOnQueue()
+        }
+    }
+
+    /// Drop all in-memory overrides and recompute from snapshot.
+    public func clearOverrides() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.overrides.clearAll()
+            self.recomputeOnQueue()
+        }
+    }
+
+    /// Force-redraw every window: clears the diff baseline so every desired
+    /// spec is re-emitted as create/update.
+    public func redrawAll() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.lastDesired = [:]
+            DispatchQueue.main.async { [renderer] in renderer.tearDown() }
+            self.recomputeOnQueue()
+        }
+    }
+
+    public func currentOverrides() -> BorderRuntimeOverrides {
+        queue.sync { overrides }
+    }
+
     /// The daemon connects this to the WindowTracker coalescer on startup.
     /// Each call schedules a single recompute on the borders queue.
     public func handleCoalescedBatch(_ updates: [CoalescedUpdate]) {
-        queue.async { [weak self] in self?.recompute() }
+        queue.async { [weak self] in self?.recomputeOnQueue() }
     }
 
     /// Force a full recompute (config reload / startup / topology change).
     public func recompute() {
+        queue.async { [weak self] in self?.recomputeOnQueue() }
+    }
+
+    private func recomputeOnQueue() {
+        dispatchPrecondition(condition: .onQueue(queue))
         let snapshot = configStore.currentSnapshot
         let cache = Dictionary(uniqueKeysWithValues: tracker.snapshot.map { ($0.windowID, $0) })
         let primaryHeight = mainScreenHeight()
@@ -31,6 +79,7 @@ public final class BorderEngine: @unchecked Sendable {
             windows: cache,
             focusedWindowID: tracker.currentFocusedWindowID,
             snapshot: snapshot,
+            overrides: overrides,
             primaryDisplayHeight: primaryHeight
         )
         let next = BorderEngineLogic.desiredBorders(inputs)

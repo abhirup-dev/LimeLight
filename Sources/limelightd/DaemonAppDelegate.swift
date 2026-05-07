@@ -148,6 +148,54 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
         router.register("config.path") { req in
             IPCResponse.success(id: req.id, result: AnyCodable(store.path))
         }
+
+        // Border runtime overrides (focusfx-14.3). The shim binary forwards
+        // JankyBorders args here as `borders.style`. CLI subcommands route to
+        // the boolean / redraw helpers.
+        router.register("borders.style") { [weak self] req in
+            guard let engine = self?.borderEngine else {
+                return IPCResponse.failure(id: req.id, code: "engine_unavailable", message: "border engine not started")
+            }
+            let args = req.args ?? [:]
+            do {
+                let parsed = try BordersStyleRequestDecoder.decode(from: args)
+                engine.applyStyleRequest(parsed)
+                return IPCResponse.success(id: req.id, result: AnyCodable([
+                    "applied": AnyCodable(true),
+                    "perWindow": AnyCodable(parsed.applyTo != nil),
+                ] as [String: AnyCodable]))
+            } catch {
+                return IPCResponse.failure(id: req.id, code: "bad_args", message: "\(error)")
+            }
+        }
+        router.register("borders.enable") { [weak self] req in
+            guard let engine = self?.borderEngine else {
+                return IPCResponse.failure(id: req.id, code: "engine_unavailable", message: "border engine not started")
+            }
+            engine.setEnabled(true)
+            return IPCResponse.success(id: req.id, result: AnyCodable("enabled"))
+        }
+        router.register("borders.disable") { [weak self] req in
+            guard let engine = self?.borderEngine else {
+                return IPCResponse.failure(id: req.id, code: "engine_unavailable", message: "border engine not started")
+            }
+            engine.setEnabled(false)
+            return IPCResponse.success(id: req.id, result: AnyCodable("disabled"))
+        }
+        router.register("borders.redrawAll") { [weak self] req in
+            guard let engine = self?.borderEngine else {
+                return IPCResponse.failure(id: req.id, code: "engine_unavailable", message: "border engine not started")
+            }
+            engine.redrawAll()
+            return IPCResponse.success(id: req.id, result: AnyCodable("redrawing"))
+        }
+        router.register("borders.clearOverrides") { [weak self] req in
+            guard let engine = self?.borderEngine else {
+                return IPCResponse.failure(id: req.id, code: "engine_unavailable", message: "border engine not started")
+            }
+            engine.clearOverrides()
+            return IPCResponse.success(id: req.id, result: AnyCodable("cleared"))
+        }
     }
 
     private static func encodeReloadResponse(

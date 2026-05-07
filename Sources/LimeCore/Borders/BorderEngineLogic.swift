@@ -44,6 +44,7 @@ public enum BorderEngineLogic {
         public let windows: [WindowID: WindowState]
         public let focusedWindowID: WindowID?
         public let snapshot: ConfigSnapshot
+        public let overrides: BorderRuntimeOverrides
         public let primaryDisplayHeight: CGFloat
         public let aerospaceWorkspace: String?
 
@@ -51,12 +52,14 @@ public enum BorderEngineLogic {
             windows: [WindowID: WindowState],
             focusedWindowID: WindowID?,
             snapshot: ConfigSnapshot,
+            overrides: BorderRuntimeOverrides = .empty,
             primaryDisplayHeight: CGFloat,
             aerospaceWorkspace: String? = nil
         ) {
             self.windows = windows
             self.focusedWindowID = focusedWindowID
             self.snapshot = snapshot
+            self.overrides = overrides
             self.primaryDisplayHeight = primaryDisplayHeight
             self.aerospaceWorkspace = aerospaceWorkspace
         }
@@ -64,22 +67,28 @@ public enum BorderEngineLogic {
 
     /// Produces the desired set of border specs, keyed by window ID for cheap diffing.
     public static func desiredBorders(_ inputs: Inputs) -> [WindowID: BorderSpec] {
-        let g = inputs.snapshot.borders
-        guard g.enabled else { return [:] }
+        // Precedence: per-window override > rule override > global override > config default.
+        let effectiveGlobal = applyOverride(inputs.snapshot.borders, inputs.overrides.global)
+        guard effectiveGlobal.enabled else { return [:] }
 
         var result: [WindowID: BorderSpec] = [:]
         result.reserveCapacity(inputs.windows.count)
 
         for (wid, w) in inputs.windows {
-            // Skip off-screen, zero-frame, or excluded windows.
             guard w.isOnScreen else { continue }
             guard w.frame.width > 0, w.frame.height > 0 else { continue }
 
             let attrs = w.attributes(aerospaceWorkspace: inputs.aerospaceWorkspace)
             if RuleResolver.isExcluded(attrs, snapshot: inputs.snapshot) { continue }
+            if !passesShimFilters(attrs: attrs, override: inputs.overrides.global) { continue }
 
-            // Resolve effective borders (rule overrides patch global).
-            let effective = RuleResolver.resolveBorders(for: attrs, snapshot: inputs.snapshot)
+            // Rule overrides patch the (already-overridden) global.
+            let afterRule = applyRule(
+                effectiveGlobal,
+                rule: RuleResolver.firstMatchingRule(attrs, snapshot: inputs.snapshot)
+            )
+            let effective = applyOverride(afterRule, inputs.overrides.perWindow[wid] ?? BordersStyleRequest())
+
             let isActive = (wid == inputs.focusedWindowID)
             let cocoa = cocoaFrame(from: w.frame, primaryDisplayHeight: inputs.primaryDisplayHeight)
 
@@ -93,6 +102,52 @@ public enum BorderEngineLogic {
             )
         }
         return result
+    }
+
+    /// Patches a `BordersConfig` field-by-field from a runtime override request.
+    /// Per-field nil means "leave alone".
+    public static func applyOverride(_ base: BordersConfig, _ o: BordersStyleRequest) -> BordersConfig {
+        BordersConfig(
+            enabled: o.enabled ?? base.enabled,
+            style: o.style ?? base.style,
+            order: o.order ?? base.order,
+            width: o.width ?? base.width,
+            hidpi: o.hidpi ?? base.hidpi,
+            active: o.active ?? base.active,
+            inactive: o.inactive ?? base.inactive,
+            background: BordersConfig.BackgroundConfig(
+                enabled: o.backgroundEnabled ?? base.background.enabled,
+                color: o.background ?? base.background.color
+            )
+        )
+    }
+
+    static func applyRule(_ base: BordersConfig, rule: Rule?) -> BordersConfig {
+        guard let r = rule, let o = r.borderOverrides else { return base }
+        return BordersConfig(
+            enabled: base.enabled,
+            style: o.style ?? base.style,
+            order: base.order,
+            width: o.width ?? base.width,
+            hidpi: base.hidpi,
+            active: o.active ?? base.active,
+            inactive: o.inactive ?? base.inactive,
+            background: base.background
+        )
+    }
+
+    /// JankyBorders-style runtime blacklist/whitelist sourced from the global
+    /// override (set via `borders blacklist=... whitelist=...`). Empty/nil
+    /// means "no filter on this dimension".
+    static func passesShimFilters(attrs: WindowAttributes, override: BordersStyleRequest) -> Bool {
+        if let bl = override.blacklist, !bl.isEmpty,
+           let app = attrs.appName, bl.contains(app) {
+            return false
+        }
+        if let wl = override.whitelist, !wl.isEmpty {
+            guard let app = attrs.appName, wl.contains(app) else { return false }
+        }
+        return true
     }
 
     /// Diff prev vs next desired-set into renderer-actionable lists.
