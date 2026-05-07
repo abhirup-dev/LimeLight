@@ -63,6 +63,9 @@ private final class BorderWindow {
         w.backgroundColor = .clear
         w.hasShadow = false
         w.ignoresMouseEvents = true
+        // sharingType=.none hides this window from CGWindowListCopyWindowInfo,
+        // so the next enumeration tick won't re-border our own borders.
+        w.sharingType = .none
         w.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
         // .canJoinAllSpaces is wrong for true per-Space attachment, but fine
         // for v0 — borders show on all Spaces. Per-Space membership is part

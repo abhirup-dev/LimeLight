@@ -34,6 +34,17 @@ public final class CGWindowListBridge: WindowServerBridge, @unchecked Sendable {
         let title = entry[kCGWindowName as String] as? String
         let isOnScreen = (entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? true
 
+        // Layer 0 = normal application windows. Higher layers are menu bar items,
+        // status items, tooltips, popovers, dock — and our own border overlays
+        // (statusBar+1). Filtering here prevents the feedback loop where every
+        // re-enumeration re-borders our previous borders.
+        let layer = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+        if layer != 0 { return nil }
+
+        // Drop fully transparent windows (sharing-state hidden, alpha 0 helpers).
+        let alpha = (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1.0
+        if alpha <= 0 { return nil }
+
         var frame: CGRect = .zero
         if let bounds = entry[kCGWindowBounds as String] as? [String: Any] {
             // CGRectMakeWithDictionaryRepresentation expects a CFDictionary
