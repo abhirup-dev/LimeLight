@@ -11,3 +11,6 @@ DerivedData/
 *.xcodeproj
 *.xcworkspace
 .DS_Store
+
+# Session handoffs are local-only (per user policy)
+.claude/handoffs/
