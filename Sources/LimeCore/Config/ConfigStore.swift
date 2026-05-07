@@ -57,9 +57,44 @@ public final class ConfigStore: @unchecked Sendable {
     }
 
     /// Parses arbitrary JSONC text and publishes if valid. Exposed for tests
-    /// and for future "validate without writing" CLI flows.
+    /// and for the live `reload` IPC path.
     @discardableResult
     public func parse(raw: String) -> LoadResult {
+        let result = compile(raw: raw)
+        if result.parseError == nil {
+            publish(result.snapshot)
+            return LoadResult(snapshot: result.snapshot, replacedActive: true, parseError: nil)
+        }
+        return result
+    }
+
+    /// Parse + compile WITHOUT publishing. Used by `config.validate` so that
+    /// running `limelight config validate` against a candidate file reports
+    /// diagnostics without swapping the live snapshot. `replacedActive` is
+    /// always `false` regardless of validity.
+    public func validate(raw: String) -> LoadResult {
+        compile(raw: raw)
+    }
+
+    /// File-based validate: read `path` (defaults to the store's own path)
+    /// and validate without publishing. Mirrors `loadSync`'s file-handling
+    /// semantics so callers see consistent diagnostics, but never mutates
+    /// the active snapshot.
+    public func validateFile(at filePath: String? = nil) -> LoadResult {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        let target = filePath ?? path
+        let raw: String
+        do {
+            raw = try String(contentsOfFile: target, encoding: .utf8)
+        } catch CocoaError.fileReadNoSuchFile {
+            return LoadResult(snapshot: currentSnapshot, replacedActive: false, parseError: "config not found at \(target)")
+        } catch {
+            return LoadResult(snapshot: currentSnapshot, replacedActive: false, parseError: error.localizedDescription)
+        }
+        return compile(raw: raw)
+    }
+
+    private func compile(raw: String) -> LoadResult {
         dispatchPrecondition(condition: .notOnQueue(.main))
 
         let sanitized: String
@@ -77,8 +112,7 @@ public final class ConfigStore: @unchecked Sendable {
         }
 
         let compiled = ConfigCompiler.compile(decoded)
-        publish(compiled)
-        return LoadResult(snapshot: compiled, replacedActive: true, parseError: nil)
+        return LoadResult(snapshot: compiled, replacedActive: false, parseError: nil)
     }
 
     private func publish(_ next: ConfigSnapshot) {

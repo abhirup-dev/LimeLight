@@ -149,11 +149,12 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
             return Self.encodeReloadResponse(id: req.id, result: result)
         }
 
-        // `config.validate`: parse the file (or text supplied via args.text) and report
-        // diagnostics WITHOUT publishing if invalid. Used by `limelight config validate`.
+        // `config.validate`: parse the configured file and report diagnostics
+        // WITHOUT publishing — even on success. Used by `limelight config
+        // validate` so a CLI dry-run never swaps the live snapshot
+        // (focusfx-7ew).
         router.register("config.validate") { req in
-            // Reuse the daemon's store path; future args could supply alternative text.
-            let result = store.loadSync()
+            let result = store.validateFile()
             return Self.encodeReloadResponse(id: req.id, result: result, validateOnly: true)
         }
 

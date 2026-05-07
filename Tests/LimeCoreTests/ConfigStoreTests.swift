@@ -202,6 +202,42 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(store.currentSnapshot.borders.width, 9.0)
     }
 
+    // focusfx-7ew: `validate` must NEVER swap the live snapshot, even when the
+    // candidate parses cleanly. Earlier the daemon's `config.validate` IPC
+    // routed through `loadSync()` and published the parsed config — running a
+    // CLI dry-run against a different valid file would silently replace the
+    // active config. Pin the non-publishing path here.
+    func testValidateDoesNotPublishEvenOnSuccess() {
+        let store = makeStore()
+        // Establish a known-good live snapshot.
+        let baseline = parseOffMain(store: store, raw: Self.planSampleConfig)
+        XCTAssertTrue(baseline.replacedActive)
+        XCTAssertEqual(store.currentSnapshot.borders.width, 5.0)
+
+        // Validate a *different* but valid candidate that would shift width.
+        let candidate = """
+        { "borders": { "width": 42.0 } }
+        """
+        let result = validateOffMain(store: store, raw: candidate)
+        XCTAssertNil(result.parseError, "candidate should parse cleanly")
+        XCTAssertFalse(result.replacedActive, "validate must not flip replacedActive")
+        XCTAssertEqual(result.snapshot.borders.width, 42.0, "diagnostics-bearing snapshot should reflect candidate")
+
+        // The live snapshot must be untouched.
+        XCTAssertEqual(store.currentSnapshot.borders.width, 5.0, "validate leaked into live snapshot")
+    }
+
+    func testValidateReportsErrorsWithoutTouchingSnapshot() {
+        let store = makeStore()
+        _ = parseOffMain(store: store, raw: Self.planSampleConfig)
+        let liveBefore = store.currentSnapshot.borders.width
+
+        let result = validateOffMain(store: store, raw: "{ broken")
+        XCTAssertNotNil(result.parseError)
+        XCTAssertFalse(result.replacedActive)
+        XCTAssertEqual(store.currentSnapshot.borders.width, liveBefore)
+    }
+
     // MARK: - off-main helpers
 
     private func parseOffMain(store: ConfigStore, raw: String) -> ConfigStore.LoadResult {
@@ -209,6 +245,17 @@ final class ConfigStoreTests: XCTestCase {
         let exp = expectation(description: "parse")
         DispatchQueue.global(qos: .userInitiated).async {
             captured = store.parse(raw: raw)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 5)
+        return captured
+    }
+
+    private func validateOffMain(store: ConfigStore, raw: String) -> ConfigStore.LoadResult {
+        var captured: ConfigStore.LoadResult!
+        let exp = expectation(description: "validate")
+        DispatchQueue.global(qos: .userInitiated).async {
+            captured = store.validate(raw: raw)
             exp.fulfill()
         }
         wait(for: [exp], timeout: 5)
