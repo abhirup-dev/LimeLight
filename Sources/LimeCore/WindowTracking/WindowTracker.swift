@@ -138,6 +138,19 @@ public final class WindowTracker: @unchecked Sendable {
         axObservers.setOnFocusChange { [weak self] in
             self?.fastPathFocusUpdate()
         }
+        // SLS streaming (focusfx-b13). When the injected bridge is the
+        // streaming one, install per-event subscriptions that drive the
+        // same debounced refresh path the AX/NSWorkspace observers use.
+        // This makes refresh() optional rather than the primary update
+        // path: events flow in directly from the WindowServer instead of
+        // requiring AX move/resize fan-out. AX and activeSpaceDidChange
+        // remain as public-API fallbacks (see issue notes); the debouncer
+        // collapses redundant ticks.
+        if let streaming = server as? StreamingSkyLightBridge {
+            _ = streaming.start(dispatchQueue: trackerQueue) { [weak self] _ in
+                self?.scheduleDebouncedRefresh()
+            }
+        }
     }
 
     public func stop() {

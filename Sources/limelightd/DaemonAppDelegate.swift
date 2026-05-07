@@ -8,7 +8,13 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
     private let router = IPCRouter()
     private var ipcServer: IPCServer?
     private let configStore = ConfigStore(path: Lime.resolvedConfigPath)
-    private lazy var windowTracker = WindowTracker(coalesceMs: 16) { [weak self] batch in
+    /// Window tracker server bridge. Default to the SLS streaming bridge —
+    /// it wraps a `CGWindowListBridge` for enumeration and layers SLS
+    /// events on top via dlopen+dlsym (focusfx-b13). If private symbols are
+    /// missing on this OS, `start()` is a no-op and the tracker keeps
+    /// using AX + NSWorkspace observers as the public-API fallback.
+    private let windowServerBridge: WindowServerBridge = StreamingSkyLightBridge()
+    private lazy var windowTracker = WindowTracker(server: windowServerBridge, coalesceMs: 16) { [weak self] batch in
         self?.borderEngine?.handleCoalescedBatch(batch)
     }
     private var borderEngine: BorderEngine?
