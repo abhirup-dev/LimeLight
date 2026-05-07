@@ -3,12 +3,14 @@
 # Usage:
 #   DEV_SIGN_IDENTITY="Apple Development: Your Name (...)" ./Scripts/dev-launch.sh
 #   ./Scripts/dev-launch.sh --configuration debug --output ~/Applications/Dev/LimeLight.app
+#   ./Scripts/dev-launch.sh --no-sign
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="debug"
 APP="${LIMELIGHT_DEV_APP_PATH:-$HOME/Applications/Dev/LimeLight.app}"
 SIGN_IDENTITY="${DEV_SIGN_IDENTITY:-${LIMELIGHT_DEV_SIGN_IDENTITY:-}}"
+SIGN_APP=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -24,6 +26,10 @@ while [[ $# -gt 0 ]]; do
             SIGN_IDENTITY="${2:?missing value for $1}"
             shift 2
             ;;
+        --no-sign)
+            SIGN_APP=0
+            shift
+            ;;
         -h|--help)
             sed -n '2,5p' "$0"
             exit 0
@@ -38,13 +44,23 @@ done
 swift build -c "$CONFIG"
 "$ROOT/Scripts/bundle-app.sh" --configuration "$CONFIG" --output "$APP"
 
-if [[ -n "$SIGN_IDENTITY" ]]; then
+if [[ "$SIGN_APP" == "1" && -z "$SIGN_IDENTITY" ]]; then
+    SIGN_IDENTITY="$(
+        security find-identity -p codesigning -v 2>/dev/null |
+            sed -n 's/.*"\(Apple Development:.*\)"/\1/p' |
+            head -1
+    )"
+fi
+
+if [[ "$SIGN_APP" == "1" && -n "$SIGN_IDENTITY" ]]; then
     codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
     codesign --verify --deep --strict "$APP"
     echo "Signed $APP with $SIGN_IDENTITY"
+elif [[ "$SIGN_APP" == "0" ]]; then
+    echo "Skipping codesign for $APP."
 else
-    echo "DEV_SIGN_IDENTITY not set; leaving $APP unsigned/ad-hoc." >&2
-    echo "Set DEV_SIGN_IDENTITY to an Apple Development identity for stable TCC grants." >&2
+    echo "No valid Apple Development identity found; leaving $APP unsigned/ad-hoc." >&2
+    echo "Set DEV_SIGN_IDENTITY or run with --no-sign to make this explicit." >&2
 fi
 
 open "$APP"

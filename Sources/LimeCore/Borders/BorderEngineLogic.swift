@@ -160,6 +160,12 @@ public enum BorderEngineLogic {
 
         var result: [BorderID: BorderSpec] = [:]
         result.reserveCapacity(inputs.orderedWindows.count + inputs.displays.count)
+        // Frames of windows already accepted, in z-order. The occlusion walk
+        // (below) tests against this list so stacked windows produce only one
+        // border — the top of the stack. AeroSpace tile layouts still pass
+        // because adjacent tiles share an edge but `intersects` is exclusive.
+        var acceptedFrames: [CGRect] = []
+        acceptedFrames.reserveCapacity(inputs.orderedWindows.count)
 
         for w in inputs.orderedWindows {
             guard w.isOnScreen, w.frame.width > 0, w.frame.height > 0 else { continue }
@@ -179,6 +185,13 @@ public enum BorderEngineLogic {
             if RuleResolver.isExcluded(attrs, snapshot: inputs.snapshot) { continue }
             if !passesShimFilters(attrs: attrs, override: inputs.overrides.global) { continue }
 
+            // Occlusion: front-to-back, any overlap with a higher-z accepted
+            // window means this window is not the top of its visual stack.
+            // Strict any-overlap (partial cover counts as covered) gives the
+            // JankyBorders-style "border only the visible window" behavior
+            // even for piles of overlapping Slack-style windows.
+            if acceptedFrames.contains(where: { $0.intersects(w.frame) }) { continue }
+
             let afterRule = applyRule(
                 effectiveGlobal,
                 rule: RuleResolver.firstMatchingRule(attrs, snapshot: inputs.snapshot)
@@ -196,6 +209,7 @@ public enum BorderEngineLogic {
                 color: isActive ? effective.active : effective.inactive,
                 isActive: isActive
             )
+            acceptedFrames.append(w.frame)
         }
 
         // Screen borders: one per non-focused, non-fullscreen display, only

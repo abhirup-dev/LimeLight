@@ -78,7 +78,7 @@ final class BorderRuntimeOverridesTests: XCTestCase {
         ov.perWindow[1] = perW
 
         let inputs = BorderEngineLogic.Inputs(
-            windows: [1: win(1), 2: win(2)],
+            windows: [1: win(1), 2: win(2, frame: CGRect(x: 1000, y: 0, width: 800, height: 600))],
             focusedWindowID: 1,
             snapshot: snap(), overrides: ov, primaryDisplayHeight: 1080
         )
@@ -110,7 +110,7 @@ final class BorderRuntimeOverridesTests: XCTestCase {
         }()
 
         let inputs = BorderEngineLogic.Inputs(
-            windows: [1: win(1, app: "Warp"), 2: win(2, app: "Warp")],
+            windows: [1: win(1, app: "Warp"), 2: win(2, app: "Warp", frame: CGRect(x: 1000, y: 0, width: 800, height: 600))],
             focusedWindowID: 1,
             snapshot: snap(rules: [rule]),
             overrides: ov, primaryDisplayHeight: 1080
@@ -135,7 +135,7 @@ final class BorderRuntimeOverridesTests: XCTestCase {
         var ov = BorderRuntimeOverrides.empty
         ov.global.blacklist = ["Finder"]
         let inputs = BorderEngineLogic.Inputs(
-            windows: [1: win(1, app: "Warp"), 2: win(2, app: "Finder")],
+            windows: [1: win(1, app: "Warp"), 2: win(2, app: "Finder", frame: CGRect(x: 1000, y: 0, width: 800, height: 600))],
             focusedWindowID: 1,
             snapshot: snap(), overrides: ov, primaryDisplayHeight: 1080
         )
@@ -147,7 +147,7 @@ final class BorderRuntimeOverridesTests: XCTestCase {
         var ov = BorderRuntimeOverrides.empty
         ov.global.whitelist = ["Warp"]
         let inputs = BorderEngineLogic.Inputs(
-            windows: [1: win(1, app: "Warp"), 2: win(2, app: "Finder")],
+            windows: [1: win(1, app: "Warp"), 2: win(2, app: "Finder", frame: CGRect(x: 1000, y: 0, width: 800, height: 600))],
             focusedWindowID: 1,
             snapshot: snap(), overrides: ov, primaryDisplayHeight: 1080
         )

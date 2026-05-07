@@ -64,7 +64,7 @@ final class BorderEngineLogicTests: XCTestCase {
 
     func testDesiredBordersFocusedIsActiveOthersAreInactive() {
         let inputs = BorderEngineLogic.Inputs(
-            windows: [1: w(1), 2: w(2, app: "Finder")],
+            windows: [1: w(1), 2: w(2, app: "Finder", frame: CGRect(x: 1000, y: 0, width: 800, height: 600))],
             focusedWindowID: 1,
             snapshot: makeSnapshot(),
             primaryDisplayHeight: 1080
@@ -205,6 +205,44 @@ final class BorderEngineLogicTests: XCTestCase {
         )
         let result = BorderEngineLogic.desiredBorders(inputs)
         XCTAssertNil(result[.screen(2)], "fullscreen monitor must not get a screen border")
+    }
+
+    func testOcclusionStackedWindowsOnlyTopBorders() {
+        // Three Slack windows stacked on the same monitor. orderedWindows is
+        // CGWindowList front-to-back — the front (id=1) covers the others.
+        let d1 = display(1, cg: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        let top = w(1, frame: CGRect(x: 100, y: 100, width: 800, height: 600))
+        let mid = w(2, frame: CGRect(x: 110, y: 110, width: 800, height: 600))
+        let bot = w(3, frame: CGRect(x: 120, y: 120, width: 800, height: 600))
+        let inputs = BorderEngineLogic.Inputs(
+            orderedWindows: [top, mid, bot],
+            focusedWindowID: 1,
+            snapshot: makeSnapshot(),
+            primaryDisplayHeight: 1080,
+            displays: [d1]
+        )
+        let result = BorderEngineLogic.desiredBorders(inputs)
+        XCTAssertNotNil(result[.window(1)])
+        XCTAssertNil(result[.window(2)], "mid window is covered by top — no border")
+        XCTAssertNil(result[.window(3)], "bottom window is covered — no border")
+    }
+
+    func testOcclusionAdjacentTilesBothBorder() {
+        // AeroSpace-style: two side-by-side tiles share an edge but don't
+        // overlap. Both must keep their borders.
+        let d1 = display(1, cg: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        let left = w(1, frame: CGRect(x: 0, y: 0, width: 960, height: 1080))
+        let right = w(2, frame: CGRect(x: 960, y: 0, width: 960, height: 1080))
+        let inputs = BorderEngineLogic.Inputs(
+            orderedWindows: [left, right],
+            focusedWindowID: 1,
+            snapshot: makeSnapshot(),
+            primaryDisplayHeight: 1080,
+            displays: [d1]
+        )
+        let result = BorderEngineLogic.desiredBorders(inputs)
+        XCTAssertNotNil(result[.window(1)])
+        XCTAssertNotNil(result[.window(2)])
     }
 
     func testHybridNoFocusEmitsNoScreenBorders() {
