@@ -147,11 +147,36 @@ public enum BorderEngineLogic {
         let effectiveGlobal = applyOverride(inputs.snapshot.borders, inputs.overrides.global)
         guard effectiveGlobal.enabled else { return [:] }
 
+        // Effective focus resolution. Apps like Arc keep multiple top-level
+        // NSWindows of the *same* user-perceived window (a content window
+        // plus a backing/card window). AX may report focus on the backing
+        // window, but the user sees the front content window. If we render
+        // the bright "focused" border on the AX-focused window, the user's
+        // visible window has either no border or an inactive one.
+        //
+        // Promote: when the AX-focused window is occluded (in z-order) by
+        // another window of the *same app* whose frame contains the
+        // AX-focused window's center, that occluder is what the user
+        // perceives as focused. Render the bright border there.
+        let focusedWindowID: WindowID? = {
+            guard let fid = inputs.focusedWindowID,
+                  let f = inputs.orderedWindows.first(where: { $0.windowID == fid })
+            else { return inputs.focusedWindowID }
+            let fCenter = CGPoint(x: f.frame.midX, y: f.frame.midY)
+            for w in inputs.orderedWindows {
+                if w.windowID == fid { return fid }
+                if w.ownerPID == f.ownerPID, w.frame.contains(fCenter) {
+                    return w.windowID
+                }
+            }
+            return fid
+        }()
+
         // Determine the focused display (if any) by locating the focused
         // window's center inside one of the display CG rects.
         let focusedDisplayID: CGDirectDisplayID? = {
             guard !inputs.displays.isEmpty,
-                  let fid = inputs.focusedWindowID,
+                  let fid = focusedWindowID,
                   let fw = inputs.orderedWindows.first(where: { $0.windowID == fid })
             else { return nil }
             let center = CGPoint(x: fw.frame.midX, y: fw.frame.midY)
@@ -204,7 +229,7 @@ public enum BorderEngineLogic {
             )
             let effective = applyOverride(afterRule, inputs.overrides.perWindow[w.windowID] ?? BordersStyleRequest())
 
-            let isActive = (w.windowID == inputs.focusedWindowID)
+            let isActive = (w.windowID == focusedWindowID)
             let cocoa = cocoaFrame(from: w.frame, primaryDisplayHeight: inputs.primaryDisplayHeight)
 
             result[.window(w.windowID)] = BorderSpec(
