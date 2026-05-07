@@ -103,6 +103,7 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
                         "height": AnyCodable(Double(w.frame.size.height)),
                     ] as [String: AnyCodable]),
                     "isOnScreen": AnyCodable(w.isOnScreen),
+                    "isAXOwned": AnyCodable(w.isAXOwned ?? NSNull()),
                 ] as [String: AnyCodable])
             }
             return IPCResponse.success(id: req.id, result: AnyCodable([
@@ -193,6 +194,36 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
             }
             engine.redrawAll()
             return IPCResponse.success(id: req.id, result: AnyCodable("redrawing"))
+        }
+        router.register("borders.desired") { [weak self] req in
+            guard let engine = self?.borderEngine else {
+                return IPCResponse.failure(id: req.id, code: "engine_unavailable", message: "border engine not started")
+            }
+            let desired = engine.currentDesired()
+            let entries: [AnyCodable] = desired.values.map { spec in
+                let kind: String
+                let key: String
+                switch spec.id {
+                case .window(let w): kind = "window"; key = "\(w)"
+                case .screen(let s): kind = "screen"; key = "\(s)"
+                }
+                return AnyCodable([
+                    "kind": AnyCodable(kind),
+                    "id": AnyCodable(key),
+                    "isActive": AnyCodable(spec.isActive),
+                    "frame": AnyCodable([
+                        "x": AnyCodable(Double(spec.frame.origin.x)),
+                        "y": AnyCodable(Double(spec.frame.origin.y)),
+                        "width": AnyCodable(Double(spec.frame.size.width)),
+                        "height": AnyCodable(Double(spec.frame.size.height)),
+                    ] as [String: AnyCodable]),
+                    "width": AnyCodable(spec.width),
+                ] as [String: AnyCodable])
+            }
+            return IPCResponse.success(id: req.id, result: AnyCodable([
+                "count": AnyCodable(entries.count),
+                "borders": AnyCodable(entries),
+            ] as [String: AnyCodable]))
         }
         router.register("borders.clearOverrides") { [weak self] req in
             guard let engine = self?.borderEngine else {

@@ -170,6 +170,12 @@ public enum BorderEngineLogic {
         for w in inputs.orderedWindows {
             guard w.isOnScreen, w.frame.width > 0, w.frame.height > 0 else { continue }
 
+            // AX-owned filter: skip windows the owning app doesn't consider
+            // user-visible (toolbar/chrome NSWindows that CGWindowList sees
+            // but AX doesn't list). `nil` means "unknown" — include rather
+            // than risk losing borders on a transient AX hiccup.
+            if w.isAXOwned == false { continue }
+
             // Display membership: in hybrid mode, only emit per-window borders
             // for windows on the focused display. With no focus, fall back to
             // bordering every visible window on any known display.

@@ -144,11 +144,12 @@ private final class StubAXBridge: AXBridge, @unchecked Sendable {
 
     var status: AccessibilityStatus { _status }
 
-    func focusedWindow() -> (pid: Int32, title: String?)? {
+    func focusedWindow() -> (pid: Int32, title: String?, cgWindowID: CGWindowID?)? {
         guard _status == .granted, let pid = focusedPID else { return nil }
-        return (pid, focusedTitle)
+        return (pid, focusedTitle, nil)
     }
 
     func bundleIdentifier(for pid: Int32) -> String? { bundleIDsByPID[pid] }
     func appName(for pid: Int32) -> String? { nil }
+    func axWindowIDs(for pid: Int32) -> Set<CGWindowID>? { nil }
 }

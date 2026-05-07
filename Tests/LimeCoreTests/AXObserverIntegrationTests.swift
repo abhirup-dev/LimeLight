@@ -171,7 +171,8 @@ private final class CountingServerBridge: WindowServerBridge, @unchecked Sendabl
 
 private final class StubAXBridgeForObs: AXBridge, @unchecked Sendable {
     var status: AccessibilityStatus { .granted }
-    func focusedWindow() -> (pid: Int32, title: String?)? { nil }
+    func focusedWindow() -> (pid: Int32, title: String?, cgWindowID: CGWindowID?)? { nil }
     func bundleIdentifier(for pid: Int32) -> String? { nil }
     func appName(for pid: Int32) -> String? { nil }
+    func axWindowIDs(for pid: Int32) -> Set<CGWindowID>? { nil }
 }

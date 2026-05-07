@@ -87,15 +87,20 @@ public final class RealAXWindowObserverManager: AXWindowObserverManager, @unchec
     /// - WindowCreated: catches new windows. The handler attaches the
     ///   window-level notifications to the new element so its first
     ///   move/resize will fire normally.
-    /// - FocusedWindowChanged: in-app focus shifts (e.g. moving between
-    ///   tabs/panes the host treats as separate windows). Covers cases
-    ///   `didActivateApplication` misses because the app didn't change.
+    /// - FocusedWindowChanged: in-app focus shifts. Most apps fire this
+    ///   when moving between top-level windows.
+    /// - MainWindowChanged: some apps (Arc is the known case — main
+    ///   browser window ↔ Little Arc popovers) fire only this on
+    ///   window-becomes-key, not FocusedWindowChanged. Adding it costs
+    ///   one extra subscription per app and gives the RealtimeFastHook
+    ///   a second source of truth.
     /// - ApplicationActivated/Deactivated: redundant with NSWorkspace
     ///   activation but cheap, and serves as a backstop if the
     ///   NSWorkspace observer ever drops a notification.
     private static let appLevelNotifications: [String] = [
         kAXWindowCreatedNotification as String,
         kAXFocusedWindowChangedNotification as String,
+        kAXMainWindowChangedNotification as String,
         kAXApplicationActivatedNotification as String,
         kAXApplicationDeactivatedNotification as String,
     ]
@@ -274,7 +279,14 @@ public final class RealAXWindowObserverManager: AXWindowObserverManager, @unchec
         // a separate handler that just refreshes `focusedWindowID`. This
         // makes the active/inactive border colour swap land within a frame
         // when cycling between same-app windows via hotkeys.
+        //
+        // We listen to BOTH FocusedWindowChanged and MainWindowChanged
+        // because different apps fire different events on window-becomes-
+        // key (Arc fires Main on main ↔ Little Arc; most other apps fire
+        // Focused). The fast-path handler is cheap and idempotent — extra
+        // events just trigger one extra recomputeFocus.
         if notification == kAXFocusedWindowChangedNotification as String
+            || notification == kAXMainWindowChangedNotification as String
             || notification == kAXApplicationActivatedNotification as String,
            let queue = deliveryQueue, let cb = onFocusChange {
             queue.async { cb() }

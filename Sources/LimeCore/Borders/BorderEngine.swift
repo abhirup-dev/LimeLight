@@ -26,6 +26,7 @@ public final class BorderEngine: @unchecked Sendable {
         self.tracker = tracker
         self.configStore = configStore
         installScreenParamsObserver()
+        refreshScreenCache()
     }
 
     deinit {
@@ -76,6 +77,14 @@ public final class BorderEngine: @unchecked Sendable {
         queue.sync { overrides }
     }
 
+    /// Diagnostic: returns the set of borders the engine currently has
+    /// applied (i.e. `lastDesired`). Useful for `limelight borders.desired`
+    /// to understand why a particular window has/lacks a border without
+    /// guessing from CGWindowList.
+    public func currentDesired() -> [BorderID: BorderSpec] {
+        queue.sync { lastDesired }
+    }
+
     /// The daemon connects this to the WindowTracker coalescer on startup.
     public func handleCoalescedBatch(_ updates: [CoalescedUpdate]) {
         queue.async { [weak self] in self?.recomputeOnQueue() }
@@ -98,7 +107,7 @@ public final class BorderEngine: @unchecked Sendable {
             snapshot: snapshot,
             overrides: overrides,
             primaryDisplayHeight: geom.primaryHeight,
-            displays: geom.displays
+            displays: geom.staticDisplays
         )
         let next = BorderEngineLogic.desiredBorders(inputs)
         let nextFocusedDisplay = focusedDisplayID(for: inputs)
@@ -165,7 +174,8 @@ public final class BorderEngine: @unchecked Sendable {
     /// Re-read NSScreen on screen reconfiguration (plug/unplug, resolution
     /// change, dock toggle). Public-API listener — `didChangeScreenParameters`
     /// is dispatched off the runloop, so we just bounce a recompute through
-    /// our queue.
+    /// our queue. Also refreshes the cached static screen info so we never
+    /// have to hit main on a hot path.
     private func installScreenParamsObserver() {
         let nc = NotificationCenter.default
         screenParamsObserver = nc.addObserver(
@@ -173,42 +183,74 @@ public final class BorderEngine: @unchecked Sendable {
             object: nil,
             queue: nil
         ) { [weak self] _ in
+            self?.refreshScreenCache()
             self?.recompute()
         }
     }
 
-    /// Reads `NSScreen.screens` on main and synthesizes the per-display info
-    /// the engine needs. Must be safe to call off-main; we hop synchronously
-    /// when needed because the recompute path is short.
-    ///
-    /// Fullscreen detection is heuristic: a display whose CG bounds are
-    /// covered by some window's frame (within 1pt). Stage Manager and
-    /// PiP-style overlays may fool this — see follow-up beads.
+    /// Per-display geometry cached off `NSScreen.screens`. Refreshed once at
+    /// startup and on `didChangeScreenParameters`. Lives on the borders
+    /// queue (or the main thread during init) — never read off main during
+    /// a recompute, which means `recomputeOnQueue` no longer takes a
+    /// `DispatchQueue.main.sync`. That sync was directly responsible for
+    /// 10–100 ms stalls on focus changes when main was busy (Arc rendering,
+    /// CALayer commits, etc.) and was the dominant tail-latency source.
     private struct ScreenGeometry {
         let primaryHeight: CGFloat
-        let displays: [DisplayInfo]
+        /// Static per-display geometry. The `isFullscreen` flag is filled
+        /// in dynamically per recompute against the current window cache —
+        /// a fullscreen window appearing/disappearing must NOT wait for a
+        /// screen-params change to update.
+        let staticDisplays: [DisplayInfo]
     }
 
-    private func mainScreenGeometry() -> ScreenGeometry {
+    /// Cached static geometry. Read on the borders queue (or main during
+    /// init); written only by `refreshScreenCache`.
+    private var screenCache = ScreenGeometry(primaryHeight: 0, staticDisplays: [])
+
+    /// Reads `NSScreen.screens` and writes the cache. Hops to main when off
+    /// main (initial init is on main, screen-params hop will go through the
+    /// notification's queue).
+    private func refreshScreenCache() {
         if Thread.isMainThread {
-            return readScreenGeometryOnMain()
+            screenCache = readScreenGeometryOnMain()
+        } else {
+            DispatchQueue.main.sync {
+                self.screenCache = self.readScreenGeometryOnMain()
+            }
         }
-        var result = ScreenGeometry(primaryHeight: 0, displays: [])
-        DispatchQueue.main.sync {
-            result = self.readScreenGeometryOnMain()
-        }
-        return result
     }
 
-    private func readScreenGeometryOnMain() -> ScreenGeometry {
-        let screens = NSScreen.screens
-        let primaryHeight = screens.first?.frame.height ?? 0
-
-        // Snapshot CGWindowList frames once for the fullscreen heuristic so we
-        // don't re-enumerate per display.
+    /// Builds the final `ScreenGeometry` for one recompute: cached static
+    /// info + per-call fullscreen detection against the current cache.
+    /// Pure / no main-hop. Cheap.
+    private func mainScreenGeometry() -> ScreenGeometry {
+        let cached = screenCache
         let windowFrames: [CGRect] = tracker.orderedSnapshot
             .filter { $0.isOnScreen && $0.frame.width > 0 && $0.frame.height > 0 }
             .map { $0.frame }
+        let displays: [DisplayInfo] = cached.staticDisplays.map { d in
+            let isFullscreen = windowFrames.contains { f in
+                abs(f.origin.x - d.cgFrame.origin.x) < 1
+                    && abs(f.origin.y - d.cgFrame.origin.y) < 1
+                    && abs(f.size.width - d.cgFrame.size.width) < 1
+                    && abs(f.size.height - d.cgFrame.size.height) < 1
+            }
+            return DisplayInfo(
+                id: d.id,
+                cgFrame: d.cgFrame,
+                cocoaVisibleFrame: d.cocoaVisibleFrame,
+                isFullscreen: isFullscreen
+            )
+        }
+        return ScreenGeometry(primaryHeight: cached.primaryHeight, staticDisplays: displays)
+    }
+
+    /// On-main read used to refresh the cache. The fullscreen flag is set
+    /// to `false` here — it's recomputed dynamically by `mainScreenGeometry`.
+    private func readScreenGeometryOnMain() -> ScreenGeometry {
+        let screens = NSScreen.screens
+        let primaryHeight = screens.first?.frame.height ?? 0
 
         var displays: [DisplayInfo] = []
         displays.reserveCapacity(screens.count)
@@ -218,19 +260,13 @@ public final class BorderEngine: @unchecked Sendable {
             }
             let id = num.uint32Value as CGDirectDisplayID
             let cg = CGDisplayBounds(id)
-            let isFullscreen = windowFrames.contains { f in
-                abs(f.origin.x - cg.origin.x) < 1
-                    && abs(f.origin.y - cg.origin.y) < 1
-                    && abs(f.size.width - cg.size.width) < 1
-                    && abs(f.size.height - cg.size.height) < 1
-            }
             displays.append(DisplayInfo(
                 id: id,
                 cgFrame: cg,
                 cocoaVisibleFrame: screen.visibleFrame,
-                isFullscreen: isFullscreen
+                isFullscreen: false
             ))
         }
-        return ScreenGeometry(primaryHeight: primaryHeight, displays: displays)
+        return ScreenGeometry(primaryHeight: primaryHeight, staticDisplays: displays)
     }
 }

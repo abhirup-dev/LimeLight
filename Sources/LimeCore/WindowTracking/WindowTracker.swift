@@ -291,6 +291,31 @@ public final class WindowTracker: @unchecked Sendable {
             }
         }
 
+        // AX-owned filter: query each unique pid for its AX windows list and
+        // mark each cache entry as "AX-owned" iff the pid's AX list contains
+        // its CGWindowID. BorderEngineLogic uses this to skip implementation-
+        // detail sub-windows (Arc chrome panels, etc.) that CGWindowList
+        // surfaces but the app doesn't consider user-facing.
+        //
+        // Cache is per-pid for this enum tick — `axWindowIDs` is one AX
+        // round-trip per pid (sub-ms). For ≤30 visible apps this is < 30 ms
+        // total and runs on the tracker queue, never main.
+        var axIDsByPID: [Int32: Set<CGWindowID>?] = [:]
+        for i in windows.indices {
+            let pid = windows[i].ownerPID
+            if axIDsByPID[pid] == nil {
+                axIDsByPID[pid] = ax.axWindowIDs(for: pid)
+            }
+            if let set = axIDsByPID[pid] ?? nil {
+                windows[i].isAXOwned = set.contains(windows[i].windowID)
+            } else {
+                // AX query failed for this pid — leave nil so the consumer
+                // includes the window. We do NOT want a denied/broken AX
+                // call to silently drop borders.
+                windows[i].isAXOwned = nil
+            }
+        }
+
         var newCache: [WindowID: WindowState] = [:]
         newCache.reserveCapacity(windows.count)
         var newOrder: [WindowID] = []
@@ -341,14 +366,16 @@ public final class WindowTracker: @unchecked Sendable {
     /// Resolve focus from AX. Used by both the debounced enum path and the
     /// RealtimeFastHook (`fastPathFocusUpdate`).
     ///
-    /// Tie-break order when AX (pid, title) matches multiple cache entries:
-    ///   1. Exact title match.
-    ///   2. Front-most CG z-order among the title matches (AeroSpace
-    ///      raises the newly-focused window so the front one is the
-    ///      correct answer in nearly every case).
-    ///   3. Front-most CG z-order among ALL windows of the pid (when title
-    ///      didn't disambiguate, e.g. several Slack windows whose CGWindow
-    ///      titles happen to be empty or identical).
+    /// Resolution order:
+    ///   1. **CGWindowID match** (`_AXUIElementGetWindow`). Unique, exact —
+    ///      eliminates ambiguity for apps that spawn multiple auxiliary
+    ///      windows with empty/identical titles (Arc + Little Arc, multiple
+    ///      Slack DM windows). This is the canonical path on any modern
+    ///      macOS; everything below is a fallback in case the SPI is
+    ///      unavailable or the focused window isn't in our cache yet.
+    ///   2. Exact title match against the AX title.
+    ///   3. Front-most CG z-order among the title matches.
+    ///   4. Front-most CG z-order among all windows of the pid.
     private func recomputeFocus() {
         dispatchPrecondition(condition: .onQueue(trackerQueue))
         guard let focused = ax.focusedWindow() else {
@@ -359,7 +386,15 @@ public final class WindowTracker: @unchecked Sendable {
         os_unfair_lock_lock(&cacheLock)
         let pidCandidates = cache.values.filter { $0.ownerPID == focused.pid }
         let order = orderedIDs
+        let directCGMatch = focused.cgWindowID.flatMap { cache[$0] }
         os_unfair_lock_unlock(&cacheLock)
+
+        // Path 1: exact CGWindowID match. Prefer it whenever AX hands us one
+        // and the cache knows about that window.
+        if let direct = directCGMatch {
+            updateFocus(direct.windowID)
+            return
+        }
 
         // z-order rank: smaller index = closer to front.
         let zRank: (WindowID) -> Int = { wid in
