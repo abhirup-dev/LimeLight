@@ -1,0 +1,37 @@
+# Snippets for ~/.aerospace.toml. Merge with your existing config — these
+# are the only LimeLight-relevant lines, not a full AeroSpace config.
+
+# 1. Native AeroSpace integration. Launch the LimeLight daemon when
+#    AeroSpace starts. `limelight daemon open` is a guarded `open -b`,
+#    so re-running it (e.g. on AeroSpace reload) is a no-op.
+after-startup-command = ['exec-and-forget limelight daemon open']
+
+# 2. JankyBorders-compatible startup path. If you currently have:
+#       after-startup-command = ['exec-and-forget borders ...']
+#    keep that line — the LimeLight `borders` shim binary is wire-
+#    compatible with JankyBorders' CLI. No change required as long as
+#    the shim's directory is ahead of any other `borders` on $PATH.
+#    Verify with `which borders` — should resolve to LimeLight's bin/.
+#
+#    Example (use ONE of #1 or #2, not both):
+# after-startup-command = ['exec-and-forget borders active_color=0xffe1e3e4 inactive_color=0xff494d64 width=5.0']
+
+# 3. Workspace-change hook. Fires the configured trigger effect when you
+#    swap workspaces. The hook itself must return immediately — wrap in
+#    `exec-and-forget` so AeroSpace never blocks on the CLI.
+exec-on-workspace-change = ['/bin/bash', '-c',
+    'exec-and-forget limelight trigger --aerospace-workspace=$AEROSPACE_FOCUSED_WORKSPACE']
+
+# Optional: pass workspace context into rule matching. With the hook
+# above, rules can filter by `aerospaceWorkspace` in JSONC config:
+#
+#   "rules": [
+#     {
+#       "name": "focus mode on workspace 1",
+#       "match": { "aerospaceWorkspace": "1" },
+#       "borders": { "active": { "color": "glow(0xff00d1ff)" } }
+#     }
+#   ]
+#
+# If `--aerospace-workspace` is not supplied, rules with that match
+# clause simply do not fire — there is no implicit fallback.
