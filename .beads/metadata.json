@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "focusfx",
+  "project_id": "b29ff688-5c12-4aff-ab37-6305b383964c"
+}

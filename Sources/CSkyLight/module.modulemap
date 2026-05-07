@@ -1,0 +1,5 @@
+module CSkyLight {
+    header "CSkyLight.h"
+    link "SkyLight"
+    export *
+}
