@@ -84,6 +84,7 @@ enum DaemonCommand {
             (cliDir as NSString).appendingPathComponent("../LimeLight.app"),
             (cliDir as NSString).appendingPathComponent("LimeLight.app"),
             "/Applications/LimeLight.app",
+            ((NSHomeDirectory() as NSString).appendingPathComponent("Applications/Dev/LimeLight.app")),
             ((NSHomeDirectory() as NSString).appendingPathComponent("Applications/LimeLight.app")),
         ]
         for path in candidates {

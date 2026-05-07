@@ -71,10 +71,10 @@ final class BorderEngineLogicTests: XCTestCase {
         )
         let result = BorderEngineLogic.desiredBorders(inputs)
         XCTAssertEqual(result.count, 2)
-        XCTAssertTrue(result[1]?.isActive == true)
-        XCTAssertTrue(result[2]?.isActive == false)
-        XCTAssertEqual(result[1]?.color, BordersConfig.default.active)
-        XCTAssertEqual(result[2]?.color, BordersConfig.default.inactive)
+        XCTAssertTrue(result[.window(1)]?.isActive == true)
+        XCTAssertTrue(result[.window(2)]?.isActive == false)
+        XCTAssertEqual(result[.window(1)]?.color, BordersConfig.default.active)
+        XCTAssertEqual(result[.window(2)]?.color, BordersConfig.default.inactive)
     }
 
     func testDesiredBordersBorderEnabledFalseProducesEmpty() {
@@ -107,7 +107,7 @@ final class BorderEngineLogicTests: XCTestCase {
             primaryDisplayHeight: 1080
         )
         let result = BorderEngineLogic.desiredBorders(inputs)
-        XCTAssertEqual(Set(result.keys), Set([1]))
+        XCTAssertEqual(Set(result.keys), Set([.window(1)]))
     }
 
     func testDesiredBordersHonorsExcludeList() {
@@ -125,7 +125,7 @@ final class BorderEngineLogicTests: XCTestCase {
             primaryDisplayHeight: 1080
         )
         let result = BorderEngineLogic.desiredBorders(inputs)
-        XCTAssertEqual(Set(result.keys), Set([1]))
+        XCTAssertEqual(Set(result.keys), Set([.window(1)]))
     }
 
     func testDesiredBordersAppliesRuleOverrideWidthAndColor() {
@@ -143,20 +143,101 @@ final class BorderEngineLogicTests: XCTestCase {
             snapshot: makeSnapshot(rules: [rule]),
             primaryDisplayHeight: 1080
         )
-        let spec = BorderEngineLogic.desiredBorders(inputs)[1]
+        let spec = BorderEngineLogic.desiredBorders(inputs)[.window(1)]
         XCTAssertEqual(spec?.width, 9.0)
         XCTAssertEqual(spec?.color, glow)
+    }
+
+    // MARK: - hybrid per-monitor
+
+    private func display(_ id: CGDirectDisplayID, cg: CGRect, isFullscreen: Bool = false) -> DisplayInfo {
+        DisplayInfo(id: id, cgFrame: cg, cocoaVisibleFrame: cg, isFullscreen: isFullscreen)
+    }
+
+    func testHybridUnfocusedMonitorGetsScreenBorder() {
+        // Two displays side-by-side; focused window on display 1, idle window on display 2.
+        let d1 = display(1, cg: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        let d2 = display(2, cg: CGRect(x: 1920, y: 0, width: 1920, height: 1080))
+        let focused = w(1, frame: CGRect(x: 100, y: 100, width: 800, height: 600))
+        let idle = w(2, frame: CGRect(x: 2100, y: 100, width: 800, height: 600))
+        let inputs = BorderEngineLogic.Inputs(
+            orderedWindows: [focused, idle],
+            focusedWindowID: 1,
+            snapshot: makeSnapshot(),
+            primaryDisplayHeight: 1080,
+            displays: [d1, d2]
+        )
+        let result = BorderEngineLogic.desiredBorders(inputs)
+        XCTAssertNotNil(result[.window(1)], "focused window border on focused monitor")
+        XCTAssertNil(result[.window(2)], "windows on unfocused monitor get no per-window border")
+        XCTAssertNotNil(result[.screen(2)], "unfocused monitor gets one screen-wide border")
+        XCTAssertNil(result[.screen(1)], "focused monitor must not have a screen border")
+    }
+
+    func testHybridFocusedMonitorTilesAllGetBorders() {
+        // Focused monitor has two AeroSpace tiles. Both should be bordered.
+        let d1 = display(1, cg: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        let left = w(1, frame: CGRect(x: 0, y: 0, width: 960, height: 1080))
+        let right = w(2, frame: CGRect(x: 960, y: 0, width: 960, height: 1080))
+        let inputs = BorderEngineLogic.Inputs(
+            orderedWindows: [left, right],
+            focusedWindowID: 1,
+            snapshot: makeSnapshot(),
+            primaryDisplayHeight: 1080,
+            displays: [d1]
+        )
+        let result = BorderEngineLogic.desiredBorders(inputs)
+        XCTAssertTrue(result[.window(1)]?.isActive == true)
+        XCTAssertTrue(result[.window(2)]?.isActive == false)
+        XCTAssertNil(result[.screen(1)])
+    }
+
+    func testHybridFullscreenMonitorSuppressesScreenBorder() {
+        let d1 = display(1, cg: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        let d2 = display(2, cg: CGRect(x: 1920, y: 0, width: 1920, height: 1080), isFullscreen: true)
+        let focused = w(1, frame: CGRect(x: 100, y: 100, width: 800, height: 600))
+        let inputs = BorderEngineLogic.Inputs(
+            orderedWindows: [focused],
+            focusedWindowID: 1,
+            snapshot: makeSnapshot(),
+            primaryDisplayHeight: 1080,
+            displays: [d1, d2]
+        )
+        let result = BorderEngineLogic.desiredBorders(inputs)
+        XCTAssertNil(result[.screen(2)], "fullscreen monitor must not get a screen border")
+    }
+
+    func testHybridNoFocusEmitsNoScreenBorders() {
+        let d1 = display(1, cg: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        let d2 = display(2, cg: CGRect(x: 1920, y: 0, width: 1920, height: 1080))
+        let onA = w(1, frame: CGRect(x: 100, y: 100, width: 800, height: 600))
+        let onB = w(2, frame: CGRect(x: 2100, y: 100, width: 800, height: 600))
+        let inputs = BorderEngineLogic.Inputs(
+            orderedWindows: [onA, onB],
+            focusedWindowID: nil,
+            snapshot: makeSnapshot(),
+            primaryDisplayHeight: 1080,
+            displays: [d1, d2]
+        )
+        let result = BorderEngineLogic.desiredBorders(inputs)
+        // No focus → fall back to per-window borders on both displays, no screen borders.
+        XCTAssertNotNil(result[.window(1)])
+        XCTAssertNotNil(result[.window(2)])
+        XCTAssertFalse(result[.window(1)]!.isActive)
+        XCTAssertFalse(result[.window(2)]!.isActive)
+        XCTAssertNil(result[.screen(1)])
+        XCTAssertNil(result[.screen(2)])
     }
 
     // MARK: - diff
 
     private func spec(_ id: WindowID, frame: CGRect = CGRect(x: 0, y: 0, width: 100, height: 100)) -> BorderSpec {
-        BorderSpec(windowID: id, frame: frame, width: 5, style: .round,
+        BorderSpec(id: .window(id), frame: frame, width: 5, style: .round,
                    color: BordersConfig.default.active, isActive: true)
     }
 
     func testDiffEmptyToNonEmptyIsAllCreate() {
-        let next: [WindowID: BorderSpec] = [1: spec(1), 2: spec(2)]
+        let next: [BorderID: BorderSpec] = [.window(1): spec(1), .window(2): spec(2)]
         let d = BorderEngineLogic.diff(prev: [:], next: next)
         XCTAssertEqual(d.toCreate.count, 2)
         XCTAssertTrue(d.toUpdate.isEmpty)
@@ -164,16 +245,16 @@ final class BorderEngineLogicTests: XCTestCase {
     }
 
     func testDiffNonEmptyToEmptyIsAllDestroy() {
-        let prev: [WindowID: BorderSpec] = [1: spec(1), 2: spec(2)]
+        let prev: [BorderID: BorderSpec] = [.window(1): spec(1), .window(2): spec(2)]
         let d = BorderEngineLogic.diff(prev: prev, next: [:])
-        XCTAssertEqual(d.toDestroy, [1, 2])
+        XCTAssertEqual(d.toDestroy, [.window(1), .window(2)])
         XCTAssertTrue(d.toCreate.isEmpty)
         XCTAssertTrue(d.toUpdate.isEmpty)
     }
 
     func testDiffSameSpecsIsNoop() {
         let s = spec(1)
-        let d = BorderEngineLogic.diff(prev: [1: s], next: [1: s])
+        let d = BorderEngineLogic.diff(prev: [.window(1): s], next: [.window(1): s])
         XCTAssertTrue(d.toCreate.isEmpty)
         XCTAssertTrue(d.toUpdate.isEmpty)
         XCTAssertTrue(d.toDestroy.isEmpty)
@@ -182,24 +263,24 @@ final class BorderEngineLogicTests: XCTestCase {
     func testDiffChangedSpecGoesIntoUpdate() {
         let prev = spec(1, frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         let next = spec(1, frame: CGRect(x: 50, y: 50, width: 100, height: 100))
-        let d = BorderEngineLogic.diff(prev: [1: prev], next: [1: next])
+        let d = BorderEngineLogic.diff(prev: [.window(1): prev], next: [.window(1): next])
         XCTAssertEqual(d.toUpdate.count, 1)
         XCTAssertTrue(d.toCreate.isEmpty)
         XCTAssertTrue(d.toDestroy.isEmpty)
     }
 
     func testDiffMixedScenario() {
-        let prev: [WindowID: BorderSpec] = [
-            1: spec(1, frame: CGRect(x: 0, y: 0, width: 100, height: 100)),
-            2: spec(2),
+        let prev: [BorderID: BorderSpec] = [
+            .window(1): spec(1, frame: CGRect(x: 0, y: 0, width: 100, height: 100)),
+            .window(2): spec(2),
         ]
-        let next: [WindowID: BorderSpec] = [
-            1: spec(1, frame: CGRect(x: 10, y: 10, width: 100, height: 100)),  // updated
-            3: spec(3),                                                         // created
+        let next: [BorderID: BorderSpec] = [
+            .window(1): spec(1, frame: CGRect(x: 10, y: 10, width: 100, height: 100)),
+            .window(3): spec(3),
         ]
         let d = BorderEngineLogic.diff(prev: prev, next: next)
-        XCTAssertEqual(d.toUpdate.map(\.windowID), [1])
-        XCTAssertEqual(d.toCreate.map(\.windowID), [3])
-        XCTAssertEqual(d.toDestroy, [2])
+        XCTAssertEqual(d.toUpdate.map(\.id), [.window(1)])
+        XCTAssertEqual(d.toCreate.map(\.id), [.window(3)])
+        XCTAssertEqual(d.toDestroy, [.window(2)])
     }
 }

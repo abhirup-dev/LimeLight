@@ -8,7 +8,7 @@ import Foundation
 /// uniform) only.
 @MainActor
 public final class BorderRenderer {
-    private var windows: [WindowID: BorderWindow] = [:]
+    private var windows: [BorderID: BorderWindow] = [:]
 
     public init() {}
 
@@ -17,14 +17,14 @@ public final class BorderRenderer {
         mainThreadBudget("borders.apply") {
             for spec in diff.toCreate {
                 let w = BorderWindow(spec: spec)
-                windows[spec.windowID] = w
+                windows[spec.id] = w
                 w.show()
             }
             for spec in diff.toUpdate {
-                windows[spec.windowID]?.update(spec: spec)
+                windows[spec.id]?.update(spec: spec)
             }
-            for wid in diff.toDestroy {
-                if let w = windows.removeValue(forKey: wid) {
+            for id in diff.toDestroy {
+                if let w = windows.removeValue(forKey: id) {
                     w.hide()
                 }
             }

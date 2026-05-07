@@ -59,7 +59,7 @@ final class BorderRuntimeOverridesTests: XCTestCase {
             snapshot: snap(), overrides: ov, primaryDisplayHeight: 1080
         )
         let result = BorderEngineLogic.desiredBorders(inputs)
-        XCTAssertEqual(result[1]?.width, 11)
+        XCTAssertEqual(result[.window(1)]?.width, 11)
     }
 
     func testGlobalOverrideEnabledFalseProducesEmpty() {
@@ -83,8 +83,8 @@ final class BorderRuntimeOverridesTests: XCTestCase {
             snapshot: snap(), overrides: ov, primaryDisplayHeight: 1080
         )
         let result = BorderEngineLogic.desiredBorders(inputs)
-        XCTAssertEqual(result[1]?.width, 13, "target window picks up the per-window override")
-        XCTAssertEqual(result[2]?.width, BordersConfig.default.width, "non-target stays at config default")
+        XCTAssertEqual(result[.window(1)]?.width, 13, "target window picks up the per-window override")
+        XCTAssertEqual(result[.window(2)]?.width, BordersConfig.default.width, "non-target stays at config default")
     }
 
     func testRulePrecedence_ruleOverridesGlobalRuntime_perWindowOverridesRule() {
@@ -118,15 +118,15 @@ final class BorderRuntimeOverridesTests: XCTestCase {
         let result = BorderEngineLogic.desiredBorders(inputs)
 
         // Window 1 (focused): per-window > rule > global runtime.
-        XCTAssertEqual(result[1]?.color, perWindowOverride)
+        XCTAssertEqual(result[.window(1)]?.color, perWindowOverride)
         // Window 1's width: rule (8), since the per-window override didn't set width
-        XCTAssertEqual(result[1]?.width, 8)
+        XCTAssertEqual(result[.window(1)]?.width, 8)
 
         // Window 2 (unfocused, no per-window): rule wins for color (rule specifies `active`
         // override only, so inactive falls through to global runtime — but global runtime
         // didn't set inactive → config default).
-        XCTAssertEqual(result[2]?.color, BordersConfig.default.inactive)
-        XCTAssertEqual(result[2]?.width, 8)
+        XCTAssertEqual(result[.window(2)]?.color, BordersConfig.default.inactive)
+        XCTAssertEqual(result[.window(2)]?.width, 8)
     }
 
     // MARK: - shim filters
@@ -140,7 +140,7 @@ final class BorderRuntimeOverridesTests: XCTestCase {
             snapshot: snap(), overrides: ov, primaryDisplayHeight: 1080
         )
         let result = BorderEngineLogic.desiredBorders(inputs)
-        XCTAssertEqual(Set(result.keys), Set([1]))
+        XCTAssertEqual(Set(result.keys), Set([.window(1)]))
     }
 
     func testWhitelistKeepsOnlyListed() {
@@ -152,7 +152,7 @@ final class BorderRuntimeOverridesTests: XCTestCase {
             snapshot: snap(), overrides: ov, primaryDisplayHeight: 1080
         )
         let result = BorderEngineLogic.desiredBorders(inputs)
-        XCTAssertEqual(Set(result.keys), Set([1]))
+        XCTAssertEqual(Set(result.keys), Set([.window(1)]))
     }
 
     // MARK: - decoder roundtrip

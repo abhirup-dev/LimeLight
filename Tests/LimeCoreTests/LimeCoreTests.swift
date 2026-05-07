@@ -41,7 +41,7 @@ final class LimeCoreTests: XCTestCase {
         let info = DaemonInfo(
             version: "1.0",
             pid: 4242,
-            bundleIdentifier: "dev.abhirup.lime",
+            bundleIdentifier: "dev.abhirup.LimeLight",
             socketPath: "/tmp/x.sock",
             configPath: "/tmp/x.jsonc",
             startedAt: Date(timeIntervalSince1970: 1_700_000_000)

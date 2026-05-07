@@ -261,7 +261,7 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
         DaemonInfo(
             version: Lime.version,
             pid: getpid(),
-            bundleIdentifier: Bundle.main.bundleIdentifier ?? "dev.abhirup.lime",
+            bundleIdentifier: Bundle.main.bundleIdentifier ?? "dev.abhirup.LimeLight",
             socketPath: Lime.resolvedSocketPath,
             configPath: Lime.resolvedConfigPath,
             startedAt: startedAt

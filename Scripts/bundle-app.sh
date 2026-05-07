@@ -1,15 +1,40 @@
 #!/usr/bin/env bash
 # Bundle the limelightd executable into LimeLight.app.
 # Usage: ./Scripts/bundle-app.sh [debug|release]
+#        ./Scripts/bundle-app.sh --configuration debug --output ~/Applications/Dev/LimeLight.app
 set -euo pipefail
 
-CONFIG="${1:-debug}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN_DIR="$ROOT/.build/$(swift build --show-bin-path -c "$CONFIG")"
-# `swift build --show-bin-path` already prints the absolute path; recompute.
+CONFIG="debug"
+APP="$ROOT/.build/LimeLight.app"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        debug|release)
+            CONFIG="$1"
+            shift
+            ;;
+        -c|--configuration)
+            CONFIG="${2:?missing value for $1}"
+            shift 2
+            ;;
+        -o|--output)
+            APP="${2:?missing value for $1}"
+            shift 2
+            ;;
+        -h|--help)
+            sed -n '2,3p' "$0"
+            exit 0
+            ;;
+        *)
+            echo "bundle-app.sh: unknown argument '$1'" >&2
+            exit 1
+            ;;
+    esac
+done
+
 BIN_DIR="$(cd "$ROOT" && swift build --show-bin-path -c "$CONFIG")"
 
-APP="$ROOT/.build/LimeLight.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 

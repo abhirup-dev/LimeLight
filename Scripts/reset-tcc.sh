@@ -6,7 +6,7 @@
 # Usage: ./Scripts/reset-tcc.sh
 set -euo pipefail
 
-BUNDLE_ID="dev.abhirup.lime"
+BUNDLE_ID="dev.abhirup.LimeLight"
 
 echo "Resetting Accessibility permission for $BUNDLE_ID …"
 tccutil reset Accessibility "$BUNDLE_ID"

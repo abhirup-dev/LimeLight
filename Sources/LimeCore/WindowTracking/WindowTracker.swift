@@ -35,6 +35,12 @@ public final class WindowTracker: @unchecked Sendable {
     private let axObservers: AXWindowObserverManager
 
     private var cache: [WindowID: WindowState] = [:]
+    /// Window IDs in CGWindowList z-order (front-to-back). Maintained
+    /// alongside `cache` so consumers can walk the stack in order without
+    /// re-querying CG. The dict above is for O(1) ID → state lookup; this
+    /// list is for ordered traversal (occlusion filtering in
+    /// BorderEngineLogic depends on z-order being preserved).
+    private var orderedIDs: [WindowID] = []
     private var cacheLock = os_unfair_lock()
     private var focusedWindowID: WindowID?
     private var focusHandlers: [FocusChangeHandler] = []
@@ -129,6 +135,15 @@ public final class WindowTracker: @unchecked Sendable {
         return Array(cache.values)
     }
 
+    /// Snapshot in CGWindowList z-order (front-to-back). Front element is
+    /// the topmost on-screen window. Used by BorderEngineLogic to apply the
+    /// occlusion filter ("if any higher window overlaps, skip").
+    public var orderedSnapshot: [WindowState] {
+        os_unfair_lock_lock(&cacheLock)
+        defer { os_unfair_lock_unlock(&cacheLock) }
+        return orderedIDs.compactMap { cache[$0] }
+    }
+
     public var currentFocusedWindowID: WindowID? {
         os_unfair_lock_lock(&cacheLock)
         defer { os_unfair_lock_unlock(&cacheLock) }
@@ -167,11 +182,17 @@ public final class WindowTracker: @unchecked Sendable {
 
         var newCache: [WindowID: WindowState] = [:]
         newCache.reserveCapacity(windows.count)
-        for w in windows { newCache[w.windowID] = w }
+        var newOrder: [WindowID] = []
+        newOrder.reserveCapacity(windows.count)
+        for w in windows {
+            if newCache[w.windowID] == nil { newOrder.append(w.windowID) }
+            newCache[w.windowID] = w
+        }
 
         os_unfair_lock_lock(&cacheLock)
         let oldCache = cache
         cache = newCache
+        orderedIDs = newOrder
         os_unfair_lock_unlock(&cacheLock)
 
         diffAndCoalesce(old: oldCache, new: newCache)
