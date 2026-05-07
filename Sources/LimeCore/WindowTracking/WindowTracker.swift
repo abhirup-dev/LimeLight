@@ -5,24 +5,44 @@ import os
 /// Off-main window registry.
 /// - Owns a `[WindowID: WindowState]` cache guarded by `os_unfair_lock`.
 /// - Updates run on a serial `dev.abhirup.lime.tracker` queue (`userInitiated`).
-/// - Bridges (`WindowServerBridge`, `AXBridge`) are injectable so tests can stub them.
+/// - Bridges (`WindowServerBridge`, `AXBridge`, `AXWindowObserverManager`)
+///   are injectable so tests can stub them.
 ///
-/// Scope:
-///   - Startup enumeration via WindowServerBridge.
-///   - Focus tracking via NSWorkspace.didActivateApplication + AX.
-///   - Coarse refresh hook (`refresh()`) for callers; SLS streaming is a follow-up.
+/// Refresh triggers (in order of importance for catching staleness):
+///   1. AXWindowObserverManager — push events on move / resize / minimize /
+///      restore / window-created / window-destroyed for every observed app.
+///      Fires on AeroSpace's hideInCorner frame teleports, which is the
+///      only signal we have for AeroSpace workspace switches when the
+///      frontmost app does not change. Debounced via
+///      `scheduleDebouncedRefresh()` to absorb the burst that AeroSpace
+///      fires when teleporting every window in a workspace at once.
+///   2. NSWorkspace.activeSpaceDidChangeNotification — fires on Mission
+///      Control / Stage Manager Space switches even when no app changes.
+///   3. NSWorkspace.didActivateApplicationNotification — frontmost-app
+///      changes; covers focus-driven cache refresh.
+///   4. Explicit `refresh()` calls by external callers (rare).
+///
+/// Together these eliminate the staleness that was the root cause of
+/// focusfx-l4i (phantom borders after AeroSpace workspace switch). SLS
+/// streaming (focusfx-b13) will eventually subsume #1 and add native
+/// Space-membership filtering, but #2 stays as a public-API fallback.
 public final class WindowTracker: @unchecked Sendable {
     public typealias FocusChangeHandler = @Sendable (WindowID?) -> Void
 
     private let trackerQueue = DispatchQueue(label: "dev.abhirup.lime.tracker", qos: .userInitiated)
     private let server: WindowServerBridge
     private let ax: AXBridge
+    private let axObservers: AXWindowObserverManager
 
     private var cache: [WindowID: WindowState] = [:]
     private var cacheLock = os_unfair_lock()
     private var focusedWindowID: WindowID?
     private var focusHandlers: [FocusChangeHandler] = []
-    private var workspaceObserver: NSObjectProtocol?
+    private var workspaceObservers: [NSObjectProtocol] = []
+    /// Coalesces a burst of refresh requests (e.g. AX move flurry during
+    /// AeroSpace teleport) into one enumeration per ~16ms.
+    private var refreshPending = false
+    private let refreshDebounceMs: Int = 16
 
     /// Per-window event coalescer. BorderEngine / EffectEngine subscribe via
     /// the consumer-supplied handler at init time. The tracker bumps generations
@@ -32,11 +52,13 @@ public final class WindowTracker: @unchecked Sendable {
     public init(
         server: WindowServerBridge = CGWindowListBridge(),
         ax: AXBridge = RealAXBridge(),
+        axObservers: AXWindowObserverManager = RealAXWindowObserverManager(),
         coalesceMs: Int = 16,
         onCoalesced: @escaping WindowEventCoalescer.Handler = { _ in }
     ) {
         self.server = server
         self.ax = ax
+        self.axObservers = axObservers
         self.coalescer = WindowEventCoalescer(coalesceMs: coalesceMs, handler: onCoalesced)
     }
 
@@ -55,13 +77,16 @@ public final class WindowTracker: @unchecked Sendable {
             self?.performInitialEnumeration()
         }
         installWorkspaceObservers()
+        axObservers.start(deliveryQueue: trackerQueue) { [weak self] in
+            self?.scheduleDebouncedRefresh()
+        }
     }
 
     public func stop() {
-        if let token = workspaceObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(token)
-            workspaceObserver = nil
-        }
+        let nc = NSWorkspace.shared.notificationCenter
+        for token in workspaceObservers { nc.removeObserver(token) }
+        workspaceObservers.removeAll()
+        axObservers.stop()
     }
 
     /// Re-enumerate windows. Cheap enough to call periodically in v0; SLS
@@ -69,6 +94,30 @@ public final class WindowTracker: @unchecked Sendable {
     public func refresh() {
         trackerQueue.async { [weak self] in
             self?.performInitialEnumeration()
+        }
+    }
+
+    /// AXWindowObserverManager fires one notification per window per change.
+    /// AeroSpace teleporting four windows in a workspace produces four
+    /// move events (or eight, with resize). We don't want four
+    /// re-enumerations 3ms apart; we want one a tick later, after the
+    /// burst has settled. The debouncer:
+    ///   - First call: sets `refreshPending = true` and schedules an
+    ///     enumeration `refreshDebounceMs` in the future.
+    ///   - Further calls during the window: skipped (early return).
+    ///   - When the timer fires: enumerate, clear the flag.
+    /// 16ms matches the engine's coalescer tick — same end-to-end latency
+    /// the renderer would see for a frame change on a focused window.
+    private func scheduleDebouncedRefresh() {
+        trackerQueue.async { [weak self] in
+            guard let self else { return }
+            if self.refreshPending { return }
+            self.refreshPending = true
+            self.trackerQueue.asyncAfter(deadline: .now() + .milliseconds(self.refreshDebounceMs)) { [weak self] in
+                guard let self else { return }
+                self.refreshPending = false
+                self.performInitialEnumeration()
+            }
         }
     }
 
@@ -196,18 +245,34 @@ public final class WindowTracker: @unchecked Sendable {
 
     // MARK: - NSWorkspace observers
 
+    /// NSWorkspace observers — refresh path (3) and (2) from the class
+    /// header. Both refresh immediately (no debounce) because they fire at
+    /// most once per user action, not in bursts; debouncing them would
+    /// just add latency to the visible response.
     private func installWorkspaceObservers() {
         let nc = NSWorkspace.shared.notificationCenter
-        workspaceObserver = nc.addObserver(
+
+        // (3) Frontmost-app activation. Firing path predates the AeroSpace
+        // bug fix; kept because the activation also gives us a chance to
+        // resolve focus immediately even if no AX move has fired yet.
+        let activate = nc.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: nil // delivered on a background thread; we hop to trackerQueue
+            object: nil, queue: nil
         ) { [weak self] _ in
-            guard let self else { return }
-            self.trackerQueue.async {
-                // App focus change -> refresh enumeration so cache reflects new window order.
-                self.performInitialEnumeration()
-            }
+            self?.trackerQueue.async { self?.performInitialEnumeration() }
         }
+
+        // (2) Mission Control / Stage Manager Space switches. Public API
+        // equivalent of the SLS space-change event (1401). Critical for
+        // catching native-Spaces changes today without depending on
+        // private APIs (focusfx-b13).
+        let space = nc.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil, queue: nil
+        ) { [weak self] _ in
+            self?.trackerQueue.async { self?.performInitialEnumeration() }
+        }
+
+        workspaceObservers = [activate, space]
     }
 }

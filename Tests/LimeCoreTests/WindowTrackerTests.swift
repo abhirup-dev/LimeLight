@@ -11,7 +11,7 @@ final class WindowTrackerTests: XCTestCase {
             WindowState(windowID: 2, ownerPID: 200, appName: "Finder", title: "Downloads"),
         ])
         let ax = StubAXBridge()
-        let tracker = WindowTracker(server: server, ax: ax)
+        let tracker = WindowTracker(server: server, ax: ax, axObservers: NoopAXWindowObserverManager())
         tracker.start()
 
         let snap = waitForSnapshot(tracker, expectedCount: 2)
@@ -23,7 +23,7 @@ final class WindowTrackerTests: XCTestCase {
         let server = StubServerBridge(initial: [
             WindowState(windowID: 1, ownerPID: 100, appName: "Warp", title: "old"),
         ])
-        let tracker = WindowTracker(server: server, ax: StubAXBridge())
+        let tracker = WindowTracker(server: server, ax: StubAXBridge(), axObservers: NoopAXWindowObserverManager())
         tracker.start()
         _ = waitForSnapshot(tracker, expectedCount: 1)
 
@@ -45,7 +45,7 @@ final class WindowTrackerTests: XCTestCase {
             WindowState(windowID: 20, ownerPID: 200, appName: "Finder", title: "Downloads"),
         ])
         let ax = StubAXBridge(focusedPID: 100, focusedTitle: "beta", status: .granted)
-        let tracker = WindowTracker(server: server, ax: ax)
+        let tracker = WindowTracker(server: server, ax: ax, axObservers: NoopAXWindowObserverManager())
         tracker.start()
         _ = waitForSnapshot(tracker, expectedCount: 3)
 
@@ -59,7 +59,7 @@ final class WindowTrackerTests: XCTestCase {
             WindowState(windowID: 1, ownerPID: 100, appName: "Warp"),
         ])
         let ax = StubAXBridge(status: .denied)
-        let tracker = WindowTracker(server: server, ax: ax)
+        let tracker = WindowTracker(server: server, ax: ax, axObservers: NoopAXWindowObserverManager())
         tracker.start()
         _ = waitForSnapshot(tracker, expectedCount: 1)
         // Allow the focus pass to finish.
@@ -76,7 +76,7 @@ final class WindowTrackerTests: XCTestCase {
             WindowState(windowID: 1, ownerPID: 100, appName: "Warp", bundleIdentifier: nil),
         ])
         let ax = StubAXBridge(bundleIDsByPID: [100: "dev.warp.Warp"])
-        let tracker = WindowTracker(server: server, ax: ax)
+        let tracker = WindowTracker(server: server, ax: ax, axObservers: NoopAXWindowObserverManager())
         tracker.start()
         let snap = waitForSnapshot(tracker, expectedCount: 1)
         XCTAssertEqual(snap.first?.bundleIdentifier, "dev.warp.Warp")
