@@ -154,8 +154,12 @@ final class BorderEngineLogicTests: XCTestCase {
         DisplayInfo(id: id, cgFrame: cg, cocoaVisibleFrame: cg, isFullscreen: isFullscreen)
     }
 
-    func testHybridUnfocusedMonitorGetsScreenBorder() {
-        // Two displays side-by-side; focused window on display 1, idle window on display 2.
+    func testHybridUnfocusedMonitorEmitsNoScreenBorder() {
+        // Two displays side-by-side; focused window on display 1, idle on
+        // display 2. The unfocused-monitor screen-wide border was removed
+        // (focusfx-ogp follow-up): users found the faded edge stripe more
+        // confusing than helpful. Re-enable behind a config flag if ever
+        // wanted again.
         let d1 = display(1, cg: CGRect(x: 0, y: 0, width: 1920, height: 1080))
         let d2 = display(2, cg: CGRect(x: 1920, y: 0, width: 1920, height: 1080))
         let focused = w(1, frame: CGRect(x: 100, y: 100, width: 800, height: 600))
@@ -170,8 +174,8 @@ final class BorderEngineLogicTests: XCTestCase {
         let result = BorderEngineLogic.desiredBorders(inputs)
         XCTAssertNotNil(result[.window(1)], "focused window border on focused monitor")
         XCTAssertNil(result[.window(2)], "windows on unfocused monitor get no per-window border")
-        XCTAssertNotNil(result[.screen(2)], "unfocused monitor gets one screen-wide border")
-        XCTAssertNil(result[.screen(1)], "focused monitor must not have a screen border")
+        XCTAssertNil(result[.screen(1)])
+        XCTAssertNil(result[.screen(2)])
     }
 
     func testHybridFocusedMonitorTilesAllGetBorders() {
@@ -243,6 +247,87 @@ final class BorderEngineLogicTests: XCTestCase {
         let result = BorderEngineLogic.desiredBorders(inputs)
         XCTAssertNotNil(result[.window(1)])
         XCTAssertNotNil(result[.window(2)])
+    }
+
+    /// focusfx-ogp: BorderEngineLogic trusts `focusedWindowID` (resolved
+    /// upstream via SLS in WindowTracker). Same-frame siblings drop out
+    /// via occlusion. The SLS resolver picks the visually-front surface;
+    /// this test just confirms the engine renders it as active.
+    func testBorderEngineTrustsResolvedFocusedWindowID() {
+        let d1 = display(1, cg: CGRect(x: -500, y: 0, width: 3000, height: 2000))
+        let front = w(33251, pid: 74351, app: "Arc",
+                      frame: CGRect(x: -411, y: 1123, width: 2550, height: 1429))
+        let mid = w(17013, pid: 74351, app: "Arc",
+                    frame: CGRect(x: -411, y: 1123, width: 2400, height: 1429))
+        let back = w(33605, pid: 74351, app: "Arc",
+                     frame: CGRect(x: -261, y: 1123, width: 2400, height: 1429))
+        let inputs = BorderEngineLogic.Inputs(
+            orderedWindows: [front, mid, back],
+            focusedWindowID: 33251,
+            snapshot: makeSnapshot(),
+            primaryDisplayHeight: 2000,
+            displays: [d1]
+        )
+        let result = BorderEngineLogic.desiredBorders(inputs)
+        XCTAssertEqual(result[.window(33251)]?.isActive, true)
+        XCTAssertNil(result[.window(17013)], "occlusion drops the same-frame sibling")
+        XCTAssertNil(result[.window(33605)], "occlusion drops the overlapping sibling")
+    }
+
+    /// focusfx-ogp regression: SLS picks one wid as front, but
+    /// `orderedWindows` (CG z-order) has a *different* same-pid sibling
+    /// at index 0. Without the active-wid-seeding fix in
+    /// `desiredBorders`, the occlusion walk would accept the CG-front
+    /// sibling first (rendering it as inactive, since it != focused)
+    /// and drop the SLS-chosen window via overlap occlusion. Result: no
+    /// bright border visible, faded inactive on the wrong sibling.
+    /// With the fix, the focused wid is moved to position 0 of the
+    /// iteration order so it always wins the occlusion contest.
+    func testActiveWindowSeededFirstWhenSLSAndCGZOrderDisagree() {
+        let d1 = display(1, cg: CGRect(x: -500, y: 0, width: 3000, height: 2000))
+        // CG z-order has 17013 at index 0 (i.e. CG thinks it's the
+        // visually-front Arc surface). SLS, however, returns 33251 as
+        // the suitable front-of-pid.
+        let zFront = w(17013, pid: 74351, app: "Arc",
+                       frame: CGRect(x: -411, y: 1123, width: 2400, height: 1429))
+        let slsFront = w(33251, pid: 74351, app: "Arc",
+                         frame: CGRect(x: -411, y: 1123, width: 2550, height: 1429))
+        let inputs = BorderEngineLogic.Inputs(
+            orderedWindows: [zFront, slsFront],
+            focusedWindowID: 33251, // SLS truth
+            snapshot: makeSnapshot(),
+            primaryDisplayHeight: 2000,
+            displays: [d1]
+        )
+        let result = BorderEngineLogic.desiredBorders(inputs)
+        XCTAssertEqual(result[.window(33251)]?.isActive, true,
+                       "SLS-chosen focused wid must keep its active border even if CG z-order would otherwise put a sibling first")
+        XCTAssertNil(result[.window(17013)],
+                     "the CG-z-order sibling is occluded by the active wid, gets no border")
+    }
+
+    /// AeroSpace tile: cycling between same-pid Slack tiles must keep the
+    /// AX-focused tile active, because tiles don't overlap so the
+    /// front-most-of-pid resolution narrows to whichever tile AeroSpace
+    /// raised in CG z-order (which IS the focused one).
+    func testTiledSamePidFocusFollowsAerospaceRaise() {
+        let d1 = display(1, cg: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        // Two Slack windows tiled side-by-side. AeroSpace raised the right
+        // one in z-order (front=2), AX agrees.
+        let raised = w(2, pid: 200, app: "Slack",
+                       frame: CGRect(x: 960, y: 0, width: 960, height: 1080))
+        let other = w(1, pid: 200, app: "Slack",
+                      frame: CGRect(x: 0, y: 0, width: 960, height: 1080))
+        let inputs = BorderEngineLogic.Inputs(
+            orderedWindows: [raised, other],
+            focusedWindowID: 2,
+            snapshot: makeSnapshot(),
+            primaryDisplayHeight: 1080,
+            displays: [d1]
+        )
+        let result = BorderEngineLogic.desiredBorders(inputs)
+        XCTAssertEqual(result[.window(2)]?.isActive, true)
+        XCTAssertEqual(result[.window(1)]?.isActive, false)
     }
 
     func testHybridNoFocusEmitsNoScreenBorders() {

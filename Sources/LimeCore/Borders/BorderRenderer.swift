@@ -21,10 +21,23 @@ public final class BorderRenderer {
 
     public init() {}
 
-    /// Apply a diff. Must run on the main queue.
-    public func apply(_ diff: BorderEngineLogic.Diff) {
+    /// Apply a diff. Must run on the main queue. `expected` is the full
+    /// set of `BorderID`s the engine currently considers desired —
+    /// passed alongside the diff so the renderer can reconcile and
+    /// destroy any NSWindow whose ID has fallen out of the desired set
+    /// (focusfx-ogp: under rapid focus churn we observed orphan border
+    /// windows surviving past the destroy diff).
+    public func apply(_ diff: BorderEngineLogic.Diff, expected: Set<BorderID>) {
         mainThreadBudget("borders.apply") {
             for spec in diff.toCreate {
+                // Destroy any pre-existing window for the same BorderID
+                // before creating a new one. Defensive: under rapid focus
+                // churn (Arc multi-surface) we've seen the create path
+                // collide with a not-yet-destroyed predecessor, leaking
+                // an NSWindow that the engine no longer wants.
+                if let prev = windows.removeValue(forKey: spec.id) {
+                    prev.hide()
+                }
                 let w = BorderWindow(spec: spec)
                 windows[spec.id] = w
                 w.show()
@@ -35,6 +48,17 @@ public final class BorderRenderer {
             for id in diff.toDestroy {
                 if let w = windows.removeValue(forKey: id) {
                     w.hide()
+                }
+            }
+            // Reconcile sweep: drop any NSWindow the engine no longer
+            // considers desired. Catches the failure mode where a
+            // border survives because its destroy diff was missed
+            // (out-of-order apply, dropped event, etc.). Logs at fault
+            // level so any occurrence shows up in `log stream`.
+            for id in windows.keys where !expected.contains(id) {
+                if let w = windows.removeValue(forKey: id) {
+                    w.hide()
+                    Log.borders.fault("renderer reconcile: destroyed orphan border \(String(describing: id), privacy: .public)")
                 }
             }
         }

@@ -147,30 +147,12 @@ public enum BorderEngineLogic {
         let effectiveGlobal = applyOverride(inputs.snapshot.borders, inputs.overrides.global)
         guard effectiveGlobal.enabled else { return [:] }
 
-        // Effective focus resolution. Apps like Arc keep multiple top-level
-        // NSWindows of the *same* user-perceived window (a content window
-        // plus a backing/card window). AX may report focus on the backing
-        // window, but the user sees the front content window. If we render
-        // the bright "focused" border on the AX-focused window, the user's
-        // visible window has either no border or an inactive one.
-        //
-        // Promote: when the AX-focused window is occluded (in z-order) by
-        // another window of the *same app* whose frame contains the
-        // AX-focused window's center, that occluder is what the user
-        // perceives as focused. Render the bright border there.
-        let focusedWindowID: WindowID? = {
-            guard let fid = inputs.focusedWindowID,
-                  let f = inputs.orderedWindows.first(where: { $0.windowID == fid })
-            else { return inputs.focusedWindowID }
-            let fCenter = CGPoint(x: f.frame.midX, y: f.frame.midY)
-            for w in inputs.orderedWindows {
-                if w.windowID == fid { return fid }
-                if w.ownerPID == f.ownerPID, w.frame.contains(fCenter) {
-                    return w.windowID
-                }
-            }
-            return fid
-        }()
+        // Active-window resolution: trust `inputs.focusedWindowID` (from
+        // SLS connection-filtered query in WindowTracker, AX fallback).
+        // The active wid is preserved through the occlusion walk below
+        // (it's accepted *before* z-order iteration) so a same-pid
+        // sibling can't steal its border slot — focusfx-ogp.
+        let focusedWindowID = inputs.focusedWindowID
 
         // Determine the focused display (if any) by locating the focused
         // window's center inside one of the display CG rects.
@@ -186,13 +168,25 @@ public enum BorderEngineLogic {
         var result: [BorderID: BorderSpec] = [:]
         result.reserveCapacity(inputs.orderedWindows.count + inputs.displays.count)
         // Frames of windows already accepted, in z-order. The occlusion walk
-        // (below) tests against this list so stacked windows produce only one
+        // tests against this list so stacked windows produce only one
         // border — the top of the stack. AeroSpace tile layouts still pass
         // because adjacent tiles share an edge but `intersects` is exclusive.
+        //
+        // Active wid is seeded into the accepted set FIRST, before z-order
+        // iteration, so its border can't be stolen by a same-pid sibling
+        // that happens to be ahead of it in CG z-order (focusfx-ogp: SLS
+        // and CGWindowList disagree on Arc multi-surface ordering).
         var acceptedFrames: [CGRect] = []
         acceptedFrames.reserveCapacity(inputs.orderedWindows.count)
+        var iterationOrder = inputs.orderedWindows
+        if let activeID = focusedWindowID,
+           let idx = iterationOrder.firstIndex(where: { $0.windowID == activeID }),
+           idx != 0 {
+            let active = iterationOrder.remove(at: idx)
+            iterationOrder.insert(active, at: 0)
+        }
 
-        for w in inputs.orderedWindows {
+        for w in iterationOrder {
             guard w.isOnScreen, w.frame.width > 0, w.frame.height > 0 else { continue }
 
             // AX-owned filter: skip windows the owning app doesn't consider
@@ -243,22 +237,10 @@ public enum BorderEngineLogic {
             acceptedFrames.append(w.frame)
         }
 
-        // Screen borders: one per non-focused, non-fullscreen display, only
-        // when we have a definite focused display. With no focus we'd
-        // otherwise draw a grey rectangle on every monitor including the one
-        // the user is about to focus into — flickery on cmd-tab.
-        if let focused = focusedDisplayID {
-            for d in inputs.displays where d.id != focused && !d.isFullscreen {
-                result[.screen(d.id)] = BorderSpec(
-                    id: .screen(d.id),
-                    frame: d.cocoaVisibleFrame,
-                    width: effectiveGlobal.width,
-                    style: effectiveGlobal.style,
-                    color: effectiveGlobal.inactive,
-                    isActive: false
-                )
-            }
-        }
+        // Screen-wide unfocused-monitor border: temporarily disabled
+        // (focusfx-ogp follow-up). The faded screen-edge stripe was
+        // unwanted and confused users into thinking it was a stale
+        // window border. Re-enable behind a config flag if ever wanted.
 
         return result
     }

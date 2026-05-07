@@ -100,16 +100,36 @@ public final class WindowTracker: @unchecked Sendable {
     /// here so async redraw work can stale-check before applying.
     public let coalescer: WindowEventCoalescer
 
+    /// One-shot flag set by SLS reorder/front-change/create/destroy
+    /// events. Cleared the next time `recomputeFocus` runs. When set, it
+    /// tells the SLS resolution path to drop stickiness and pick the
+    /// front-most suitable wid, on the assumption that something
+    /// genuinely changed about which window is in front.
+    private var stickyFocusInvalidated: Bool = false
+
+    /// Optional SLS-based front-window resolver (focusfx-ogp). When
+    /// available, supersedes AX-derived focus: AX `kAXFocusedWindow` lies
+    /// for apps like Arc that maintain multiple stacked NSWindows of one
+    /// user-perceived window. SLS `_SLPSGetFrontProcess` +
+    /// `SLSCopyWindowsWithOptionsAndTags` (connection-filtered) +
+    /// `window_suitable` predicate returns the WindowServer's notion of
+    /// the front user-visible window — what JankyBorders does. Nil here
+    /// means private symbols couldn't be resolved on this OS; we fall
+    /// back to the AX path in `recomputeFocus`.
+    private let slsActiveWindow: SLSActiveWindowResolver?
+
     public init(
         server: WindowServerBridge = CGWindowListBridge(),
         ax: AXBridge = RealAXBridge(),
         axObservers: AXWindowObserverManager = RealAXWindowObserverManager(),
+        slsActiveWindow: SLSActiveWindowResolver? = SLSActiveWindowResolver(),
         coalesceMs: Int = 16,
         onCoalesced: @escaping WindowEventCoalescer.Handler = { _ in }
     ) {
         self.server = server
         self.ax = ax
         self.axObservers = axObservers
+        self.slsActiveWindow = slsActiveWindow
         self.coalescer = WindowEventCoalescer(coalesceMs: coalesceMs, handler: onCoalesced)
     }
 
@@ -141,14 +161,25 @@ public final class WindowTracker: @unchecked Sendable {
         // SLS streaming (focusfx-b13). When the injected bridge is the
         // streaming one, install per-event subscriptions that drive the
         // same debounced refresh path the AX/NSWorkspace observers use.
-        // This makes refresh() optional rather than the primary update
-        // path: events flow in directly from the WindowServer instead of
-        // requiring AX move/resize fan-out. AX and activeSpaceDidChange
-        // remain as public-API fallbacks (see issue notes); the debouncer
-        // collapses redundant ticks.
+        //
+        // Event-class differentiation (focusfx-ogp): a subset of events
+        // signal that the user genuinely changed which window they're
+        // looking at — front-app change (1508), window reorder (808),
+        // window create/destroy (1325/1326). On those we release the
+        // SLS focus-stickiness so the next recompute picks the new
+        // front-most suitable window. Other events (move/resize/title)
+        // fire often during normal Arc rendering without representing a
+        // real focus change; they keep stickiness intact.
         if let streaming = server as? StreamingSkyLightBridge {
-            _ = streaming.start(dispatchQueue: trackerQueue) { [weak self] _ in
-                self?.scheduleDebouncedRefresh()
+            _ = streaming.start(dispatchQueue: trackerQueue) { [weak self] eventClass in
+                guard let self else { return }
+                switch eventClass {
+                case .frontAppChange, .windowReorder, .windowCreate, .windowDestroy, .spaceChange:
+                    self.releaseStickyFocus()
+                default:
+                    break
+                }
+                self.scheduleDebouncedRefresh()
             }
         }
     }
@@ -166,6 +197,14 @@ public final class WindowTracker: @unchecked Sendable {
         trackerQueue.async { [weak self] in
             self?.performInitialEnumeration()
         }
+    }
+
+    /// Tells `recomputeFocus` to drop SLS focus-stickiness on its next
+    /// run. Used when an SLS event signals that something actually
+    /// changed about z-order or the front app. See class header.
+    private func releaseStickyFocus() {
+        // Already on trackerQueue when called from streaming bridge handler.
+        stickyFocusInvalidated = true
     }
 
     /// AXWindowObserverManager fires one notification per window per change.
@@ -376,44 +415,82 @@ public final class WindowTracker: @unchecked Sendable {
         }
     }
 
-    /// Resolve focus from AX. Used by both the debounced enum path and the
-    /// RealtimeFastHook (`fastPathFocusUpdate`).
+    /// Resolve focus. Two strategies, in order:
     ///
-    /// Resolution order:
-    ///   1. **CGWindowID match** (`_AXUIElementGetWindow`). Unique, exact —
-    ///      eliminates ambiguity for apps that spawn multiple auxiliary
-    ///      windows with empty/identical titles (Arc + Little Arc, multiple
-    ///      Slack DM windows). This is the canonical path on any modern
-    ///      macOS; everything below is a fallback in case the SPI is
-    ///      unavailable or the focused window isn't in our cache yet.
-    ///   2. Exact title match against the AX title.
-    ///   3. Front-most CG z-order among the title matches.
-    ///   4. Front-most CG z-order among all windows of the pid.
+    /// **Primary — SLS connection-filtered front-window query.** When
+    /// `slsActiveWindow` is available we use the JankyBorders pattern:
+    /// `_SLPSGetFrontProcess` → connection ID → `SLSCopyWindowsWithOptionsAndTags`
+    /// filtered to that connection on the active Space, iterate in
+    /// WindowServer z-order, return the first window passing the
+    /// `window_suitable` predicate (parent==0, document/modal-floating,
+    /// not attached, not ignores-cycle). This is the WindowServer's
+    /// authoritative answer to "which window of the front app is the
+    /// user looking at" and naturally avoids Arc-style multi-surface
+    /// flicker (focusfx-ogp) without any per-pid stickiness.
+    ///
+    /// **Fallback — AX.** When SLS isn't available (private symbol
+    /// missing on this OS) or the SLS-returned wid isn't in our cache,
+    /// fall back to AX `kAXFocusedWindow` + `_AXUIElementGetWindow`,
+    /// then title match, then front-most-of-pid by z-order.
     private func recomputeFocus() {
         dispatchPrecondition(condition: .onQueue(trackerQueue))
+
+        // Primary path: SLS-filtered front window. Trust the WindowServer.
+        //
+        // Stickiness: SLS's `SLSCopyWindowsWithOptionsAndTags` for an
+        // app with multiple suitable surfaces (Arc) returns them in an
+        // iteration order that can shuffle between calls without any
+        // user interaction. JB itself flickers in this case
+        // (`ax_focus=on` is their documented escape hatch). We add a
+        // narrow guardrail: if the previously-resolved wid is still in
+        // the SLS suitable set AND still in our cache, prefer it — only
+        // flip when it leaves the set (e.g. user closed/raised a
+        // different window, in which case SLS reorder fires and we
+        // recompute against the new set anyway).
+        if let resolver = slsActiveWindow {
+            let suitable = resolver.frontWindowIDs()
+            if !suitable.isEmpty {
+                let invalidated = stickyFocusInvalidated
+                stickyFocusInvalidated = false
+                os_unfair_lock_lock(&cacheLock)
+                let prev = focusedWindowID
+                let prevValid: WindowID? = invalidated ? nil : prev.flatMap { p in
+                    suitable.contains(p) && cache[p] != nil ? p : nil
+                }
+                let firstInCache = suitable.first { cache[$0] != nil }
+                os_unfair_lock_unlock(&cacheLock)
+                if let prevValid {
+                    updateFocus(prevValid)
+                    return
+                }
+                if let firstInCache {
+                    updateFocus(firstInCache)
+                    return
+                }
+                // SLS returned wids we don't track — fall through to AX.
+            }
+        }
+
+        // Fallback: AX. Mirrors the pre-SLS resolution (CG wid match →
+        // title match → z-order tie-break) for environments where the
+        // private SLS symbols aren't resolvable.
         guard let focused = ax.focusedWindow() else {
             updateFocus(nil)
             return
         }
-
         os_unfair_lock_lock(&cacheLock)
         let pidCandidates = cache.values.filter { $0.ownerPID == focused.pid }
         let order = orderedIDs
         let directCGMatch = focused.cgWindowID.flatMap { cache[$0] }
         os_unfair_lock_unlock(&cacheLock)
 
-        // Path 1: exact CGWindowID match. Prefer it whenever AX hands us one
-        // and the cache knows about that window.
         if let direct = directCGMatch {
             updateFocus(direct.windowID)
             return
         }
-
-        // z-order rank: smaller index = closer to front.
         let zRank: (WindowID) -> Int = { wid in
             order.firstIndex(of: wid) ?? Int.max
         }
-
         let chosen: WindowState?
         if let title = focused.title, !title.isEmpty {
             let titleMatches = pidCandidates.filter { $0.title == title }

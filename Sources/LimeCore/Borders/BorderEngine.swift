@@ -145,8 +145,9 @@ public final class BorderEngine: @unchecked Sendable {
             return
         }
         Log.borders.debug("apply +\(diff.toCreate.count) ~\(diff.toUpdate.count) -\(diff.toDestroy.count)")
+        let expected = Set(next.keys)
         DispatchQueue.main.async { [renderer] in
-            renderer.apply(diff)
+            renderer.apply(diff, expected: expected)
         }
     }
 
