@@ -1,4 +1,4 @@
-# FocusFX: High-Performance Focus Effects + JankyBorders Replacement
+# LimeLight: High-Performance Focus Effects + JankyBorders Replacement
 
 ## Summary
 
@@ -12,14 +12,14 @@ Chosen direction:
 - JSONC config only.
 - Strict JankyBorders parity using private SkyLight/SLS APIs.
 - AeroSpace support through CLI/event-hook snippets.
-- Ship `FocusFX.app`, `focusfx` CLI, `borders` compatibility shim, and `focusfx.lua`.
+- Ship `LimeLight.app`, `limelight` CLI, `borders` compatibility shim, and `limelight.lua`.
 - Keep UI/main thread work minimal; window tracking, IPC, parsing, coalescing, and redraw scheduling must run off-main where possible.
 
 ## Architecture & Performance Model
 
 ### Process Structure
 
-- `FocusFX.app` runs as a menu bar daemon with `LSUIElement = true`.
+- `LimeLight.app` runs as a menu bar daemon with `LSUIElement = true`.
 - Core subsystems:
   - `WindowTracker`: tracks windows, Spaces, focus, movement, resize, creation, destruction.
   - `BorderEngine`: persistent active/inactive borders compatible with JankyBorders.
@@ -61,7 +61,7 @@ Chosen direction:
 - Avoid global redraws except:
   - config reload affecting global border settings
   - display/Space topology change
-  - explicit `focusfx borders redraw-all`
+  - explicit `limelight borders redraw-all`
 
 ## Public Interfaces
 
@@ -70,22 +70,22 @@ Chosen direction:
 Primary binary:
 
 ```bash
-focusfx daemon open
-focusfx daemon quit
-focusfx status --json
-focusfx reload
-focusfx current-window --json
-focusfx trigger [--effect NAME] [--window focused|WINDOW_ID] [--color '#RRGGBB'] [--duration-ms 500]
-focusfx popup [--title TEXT] [--message TEXT] [--window focused|WINDOW_ID]
-focusfx borders enable
-focusfx borders disable
-focusfx borders style [--active-color 0xffe1e3e4] [--inactive-color 0xff494d64] [--width 5.0]
-focusfx borders redraw-all
-focusfx windows --json
-focusfx effects list --json
-focusfx config path
-focusfx config validate
-focusfx perf --json
+limelight daemon open
+limelight daemon quit
+limelight status --json
+limelight reload
+limelight current-window --json
+limelight trigger [--effect NAME] [--window focused|WINDOW_ID] [--color '#RRGGBB'] [--duration-ms 500]
+limelight popup [--title TEXT] [--message TEXT] [--window focused|WINDOW_ID]
+limelight borders enable
+limelight borders disable
+limelight borders style [--active-color 0xffe1e3e4] [--inactive-color 0xff494d64] [--width 5.0]
+limelight borders redraw-all
+limelight windows --json
+limelight effects list --json
+limelight config path
+limelight config validate
+limelight perf --json
 ```
 
 JankyBorders compatibility shim:
@@ -102,7 +102,7 @@ The shim maps supported JankyBorders args into daemon commands. Unsupported args
 Use newline-delimited JSON over:
 
 ```text
-~/Library/Application Support/FocusFX/focusfx.sock
+~/Library/Application Support/LimeLight/limelight.sock
 ```
 
 Request:
@@ -128,35 +128,35 @@ IPC requirements:
 - Socket server runs off-main.
 - Each client request has a default timeout of `1500ms`.
 - Long-running commands must return accepted/status rather than block.
-- `focusfx status --json` must respond without forcing a full window rescan.
+- `limelight status --json` must respond without forcing a full window rescan.
 
 ### Hammerspoon
 
-Ship `focusfx.lua`:
+Ship `limelight.lua`:
 
 ```lua
-local focusfx = require("focusfx")
+local limelight = require("limelight")
 
-focusfx.trigger("cometRing")
-focusfx.popup("Back", "Returned after idle")
-focusfx.borders.enable()
-focusfx.borders.disable()
-focusfx.reload()
-focusfx.currentWindow()
+limelight.trigger("cometRing")
+limelight.popup("Back", "Returned after idle")
+limelight.borders.enable()
+limelight.borders.disable()
+limelight.reload()
+limelight.currentWindow()
 ```
 
 Use the CLI in v1. Calls must be non-interactive and safe for hotkeys.
 
 ### AeroSpace
 
-FocusFX must work without AeroSpace, but provide ready snippets.
+LimeLight must work without AeroSpace, but provide ready snippets.
 
 Native startup:
 
 ```toml
 after-startup-command = [
-  'exec-and-forget focusfx daemon open',
-  'exec-and-forget focusfx borders enable'
+  'exec-and-forget limelight daemon open',
+  'exec-and-forget limelight borders enable'
 ]
 ```
 
@@ -173,7 +173,7 @@ Workspace hook:
 ```toml
 exec-on-workspace-change = [
   '/bin/bash', '-lc',
-  'focusfx trigger --effect workspacePulse --duration-ms 350'
+  'limelight trigger --effect workspacePulse --duration-ms 350'
 ]
 ```
 
@@ -182,13 +182,13 @@ exec-on-workspace-change = [
 Default path:
 
 ```text
-~/Library/Application Support/FocusFX/config.jsonc
+~/Library/Application Support/LimeLight/config.jsonc
 ```
 
 Support comments and trailing commas. Provide a JSON Schema at:
 
 ```text
-~/Library/Application Support/FocusFX/config.schema.json
+~/Library/Application Support/LimeLight/config.schema.json
 ```
 
 Default config:
@@ -327,7 +327,7 @@ Behavior:
 - Draw active and inactive borders.
 - Update borders on focus, move, resize, create, destroy, hide, unhide, and Space change.
 - Keep borders attached to target windows and Spaces.
-- Support runtime updates through both `focusfx` and `borders`.
+- Support runtime updates through both `limelight` and `borders`.
 - Support per-window overrides via `apply-to`.
 - Prefer incremental updates over full redraws.
 - Keep idle CPU near zero.
@@ -348,10 +348,10 @@ Behavior:
 ### Integration Tests
 
 - Launch daemon and verify socket appears.
-- `focusfx status --json` returns valid JSON without full rescan.
+- `limelight status --json` returns valid JSON without full rescan.
 - `borders active_color=... width=...` updates running daemon.
-- `focusfx trigger` renders effect on focused window.
-- `focusfx popup` renders without stealing focus.
+- `limelight trigger` renders effect on focused window.
+- `limelight popup` renders without stealing focus.
 - Config reload applies rules without blocking UI.
 - Invalid config keeps previous valid config.
 - Repeated resize/move events do not grow unbounded work queues.

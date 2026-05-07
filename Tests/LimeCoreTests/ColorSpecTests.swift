@@ -1,5 +1,5 @@
 import XCTest
-@testable import FocusFXCore
+@testable import LimeCore
 
 final class ColorSpecTests: XCTestCase {
     func testSolidWith0xAARRGGBB() throws {

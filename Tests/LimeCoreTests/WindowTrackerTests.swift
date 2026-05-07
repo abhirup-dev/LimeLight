@@ -2,7 +2,7 @@ import XCTest
 import CoreGraphics
 import Foundation
 import os
-@testable import FocusFXCore
+@testable import LimeCore
 
 final class WindowTrackerTests: XCTestCase {
     func testStartupEnumerationPopulatesCache() {

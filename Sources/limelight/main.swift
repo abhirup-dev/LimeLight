@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import FocusFXCore
+import LimeCore
 
 // Don't die from SIGPIPE if a socket peer closes mid-write — surface a normal error instead.
 signal(SIGPIPE, SIG_IGN)
@@ -9,13 +9,13 @@ let argv = Array(CommandLine.arguments.dropFirst())
 
 func usage() {
     FileHandle.standardError.write(Data("""
-    focusfx \(FocusFX.version)
+    limelight \(Lime.version)
 
     Usage:
-      focusfx daemon open
-      focusfx daemon quit
-      focusfx status [--json]
-      focusfx --help | --version
+      limelight daemon open
+      limelight daemon quit
+      limelight status [--json]
+      limelight --help | --version
 
     Implemented commands return exit codes:
       0  success
@@ -29,10 +29,10 @@ func usage() {
 }
 
 func runHelp() -> Never {
-    print("focusfx \(FocusFX.version)")
+    print("limelight \(Lime.version)")
     print("")
     print("Top-level commands:")
-    print("  daemon open                Launch FocusFX.app.")
+    print("  daemon open                Launch LimeLight.app.")
     print("  daemon quit                Ask the running daemon to terminate.")
     print("  status [--json]            Print daemon status (cached, no rescan).")
     print("  config path                Print the config file path.")
@@ -55,7 +55,7 @@ if argv == ["--help"] || argv == ["-h"] {
 }
 
 if argv == ["--version"] || argv == ["-v"] {
-    print("focusfx \(FocusFX.version)")
+    print("limelight \(Lime.version)")
     exit(0)
 }
 
@@ -76,6 +76,6 @@ case "windows":
 case "current-window":
     CurrentWindowCommand.run(rest)
 default:
-    FileHandle.standardError.write(Data("focusfx: command '\(command)' not implemented yet\n".utf8))
+    FileHandle.standardError.write(Data("limelight: command '\(command)' not implemented yet\n".utf8))
     exit(2)
 }

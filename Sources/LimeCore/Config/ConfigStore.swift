@@ -12,7 +12,7 @@ public final class ConfigStore: @unchecked Sendable {
     }
 
     public let path: String
-    private let parseQueue = DispatchQueue(label: "dev.focusfx.config", qos: .userInitiated)
+    private let parseQueue = DispatchQueue(label: "dev.abhirup.lime.config", qos: .userInitiated)
     private var snapshot: ConfigSnapshot
     private var lock = os_unfair_lock()
 

@@ -19,7 +19,7 @@ public final class IPCServer {
             case .pathTooLong(let p, let n): return "Socket path too long for sun_path (\(p.utf8.count) > \(n)): \(p)"
             case .bindFailed(let p, let e): return "bind(\(p)) failed: \(String(cString: strerror(e)))"
             case .listenFailed(let e): return "listen() failed: \(String(cString: strerror(e)))"
-            case .alreadyRunning(let p): return "Another FocusFX daemon is already bound to \(p)"
+            case .alreadyRunning(let p): return "Another LimeLight daemon is already bound to \(p)"
             }
         }
     }
@@ -29,8 +29,8 @@ public final class IPCServer {
 
     public let socketPath: String
     private let router: IPCRouter
-    private let acceptQueue = DispatchQueue(label: "dev.focusfx.ipc.accept", qos: .userInitiated)
-    private let workQueue = DispatchQueue(label: "dev.focusfx.ipc.work", qos: .userInitiated, attributes: .concurrent)
+    private let acceptQueue = DispatchQueue(label: "dev.abhirup.lime.ipc.accept", qos: .userInitiated)
+    private let workQueue = DispatchQueue(label: "dev.abhirup.lime.ipc.work", qos: .userInitiated, attributes: .concurrent)
     private var listenFD: Int32 = -1
     private var acceptSource: DispatchSourceRead?
     private let started = DispatchSemaphore(value: 0)

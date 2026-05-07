@@ -1,20 +1,20 @@
 import Foundation
-import FocusFXCore
+import LimeCore
 
 enum ConfigCommand {
     static func run(_ args: [String]) {
         guard let sub = args.first else {
-            FileHandle.standardError.write(Data("focusfx config: missing subcommand (path|validate)\n".utf8))
+            FileHandle.standardError.write(Data("limelight config: missing subcommand (path|validate)\n".utf8))
             exit(1)
         }
         switch sub {
         case "path":
             // Local-only — no IPC needed.
-            print(FocusFX.resolvedConfigPath)
+            print(Lime.resolvedConfigPath)
         case "validate":
             runValidate()
         default:
-            FileHandle.standardError.write(Data("focusfx config: unknown subcommand '\(sub)'\n".utf8))
+            FileHandle.standardError.write(Data("limelight config: unknown subcommand '\(sub)'\n".utf8))
             exit(1)
         }
     }

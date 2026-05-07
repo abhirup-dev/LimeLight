@@ -1,5 +1,5 @@
 import XCTest
-@testable import FocusFXCore
+@testable import LimeCore
 
 final class IPCServerIntegrationTests: XCTestCase {
     private func makeTempSocketPath() -> String {

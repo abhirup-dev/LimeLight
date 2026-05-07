@@ -4,17 +4,17 @@ import os
 
 /// Off-main window registry.
 /// - Owns a `[WindowID: WindowState]` cache guarded by `os_unfair_lock`.
-/// - Updates run on a serial `dev.focusfx.tracker` queue (`userInitiated`).
+/// - Updates run on a serial `dev.abhirup.lime.tracker` queue (`userInitiated`).
 /// - Bridges (`WindowServerBridge`, `AXBridge`) are injectable so tests can stub them.
 ///
-/// Scope (focusfx-10.1):
+/// Scope:
 ///   - Startup enumeration via WindowServerBridge.
 ///   - Focus tracking via NSWorkspace.didActivateApplication + AX.
 ///   - Coarse refresh hook (`refresh()`) for callers; SLS streaming is a follow-up.
 public final class WindowTracker: @unchecked Sendable {
     public typealias FocusChangeHandler = @Sendable (WindowID?) -> Void
 
-    private let trackerQueue = DispatchQueue(label: "dev.focusfx.tracker", qos: .userInitiated)
+    private let trackerQueue = DispatchQueue(label: "dev.abhirup.lime.tracker", qos: .userInitiated)
     private let server: WindowServerBridge
     private let ax: AXBridge
 
@@ -24,9 +24,26 @@ public final class WindowTracker: @unchecked Sendable {
     private var focusHandlers: [FocusChangeHandler] = []
     private var workspaceObserver: NSObjectProtocol?
 
-    public init(server: WindowServerBridge = CGWindowListBridge(), ax: AXBridge = RealAXBridge()) {
+    /// Per-window event coalescer. BorderEngine / EffectEngine subscribe via
+    /// the consumer-supplied handler at init time. The tracker bumps generations
+    /// here so async redraw work can stale-check before applying.
+    public let coalescer: WindowEventCoalescer
+
+    public init(
+        server: WindowServerBridge = CGWindowListBridge(),
+        ax: AXBridge = RealAXBridge(),
+        coalesceMs: Int = 16,
+        onCoalesced: @escaping WindowEventCoalescer.Handler = { _ in }
+    ) {
         self.server = server
         self.ax = ax
+        self.coalescer = WindowEventCoalescer(coalesceMs: coalesceMs, handler: onCoalesced)
+    }
+
+    /// Snapshot the generation for `windowID`. Async work captures this at
+    /// dispatch time and re-checks before applying its output.
+    public func generation(for windowID: WindowID) -> WindowGeneration {
+        coalescer.currentGeneration(for: windowID)
     }
 
     deinit { stop() }
@@ -104,14 +121,40 @@ public final class WindowTracker: @unchecked Sendable {
         for w in windows { newCache[w.windowID] = w }
 
         os_unfair_lock_lock(&cacheLock)
+        let oldCache = cache
         cache = newCache
         os_unfair_lock_unlock(&cacheLock)
+
+        diffAndCoalesce(old: oldCache, new: newCache)
 
         let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000
         Log.tracker.info("enumerated \(windows.count, privacy: .public) windows in \(elapsedMs, format: .fixed(precision: 2))ms")
 
         // Re-resolve focus after a fresh enum.
         recomputeFocus()
+    }
+
+    /// Compares two cache snapshots and pushes per-window events into the
+    /// coalescer so consumers (BorderEngine, EffectEngine) get one batch tick
+    /// per `coalesceMs` instead of N events per enumeration burst.
+    private func diffAndCoalesce(old: [WindowID: WindowState], new: [WindowID: WindowState]) {
+        dispatchPrecondition(condition: .onQueue(trackerQueue))
+
+        for (wid, n) in new {
+            if let o = old[wid] {
+                if o.frame != n.frame {
+                    coalescer.enqueue(wid, change: .frameChanged)
+                }
+                if o.isOnScreen != n.isOnScreen {
+                    coalescer.enqueue(wid, change: .visibilityChanged)
+                }
+            } else {
+                coalescer.enqueue(wid, change: .created)
+            }
+        }
+        for wid in old.keys where new[wid] == nil {
+            coalescer.enqueue(wid, change: .destroyed)
+        }
     }
 
     private func recomputeFocus() {
@@ -137,10 +180,16 @@ public final class WindowTracker: @unchecked Sendable {
     private func updateFocus(_ wid: WindowID?) {
         dispatchPrecondition(condition: .onQueue(trackerQueue))
         os_unfair_lock_lock(&cacheLock)
-        let changed = focusedWindowID != wid
+        let previous = focusedWindowID
+        let changed = previous != wid
         focusedWindowID = wid
         os_unfair_lock_unlock(&cacheLock)
         if changed {
+            // Feed both the old and new focused windows through the coalescer
+            // so the border/effect engines redraw both (one losing focus,
+            // one gaining it) in the same coalescing tick.
+            if let previous { coalescer.enqueue(previous, change: .focusChanged) }
+            if let wid { coalescer.enqueue(wid, change: .focusChanged) }
             for h in focusHandlers { h(wid) }
         }
     }

@@ -1,5 +1,5 @@
 import Foundation
-import FocusFXCore
+import LimeCore
 
-// JankyBorders argv→IPC translation lands in focusfx-14.
-print("borders shim \(FocusFX.version) — stub")
+// JankyBorders argv→IPC translation lands in the planned phase.
+print("borders shim \(Lime.version) — stub")

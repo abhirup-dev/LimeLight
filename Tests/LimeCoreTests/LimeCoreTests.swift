@@ -1,9 +1,9 @@
 import XCTest
-@testable import FocusFXCore
+@testable import LimeCore
 
-final class FocusFXCoreTests: XCTestCase {
+final class LimeCoreTests: XCTestCase {
     func testVersionPresent() {
-        XCTAssertFalse(FocusFX.version.isEmpty)
+        XCTAssertFalse(Lime.version.isEmpty)
     }
 
     func testIPCRequestRoundTrip() throws {
@@ -41,7 +41,7 @@ final class FocusFXCoreTests: XCTestCase {
         let info = DaemonInfo(
             version: "1.0",
             pid: 4242,
-            bundleIdentifier: "dev.focusfx.daemon",
+            bundleIdentifier: "dev.abhirup.lime",
             socketPath: "/tmp/x.sock",
             configPath: "/tmp/x.jsonc",
             startedAt: Date(timeIntervalSince1970: 1_700_000_000)
@@ -56,9 +56,9 @@ final class FocusFXCoreTests: XCTestCase {
     }
 
     func testResolvedPathsExpandHome() {
-        XCTAssertTrue(FocusFX.resolvedSocketPath.hasSuffix("focusfx.sock"))
-        XCTAssertTrue(FocusFX.resolvedConfigPath.hasSuffix("config.jsonc"))
-        XCTAssertFalse(FocusFX.resolvedConfigPath.contains("~"))
+        XCTAssertTrue(Lime.resolvedSocketPath.hasSuffix("limelight.sock"))
+        XCTAssertTrue(Lime.resolvedConfigPath.hasSuffix("config.jsonc"))
+        XCTAssertFalse(Lime.resolvedConfigPath.contains("~"))
     }
 
     func testMainThreadBudgetPassesThrough() {

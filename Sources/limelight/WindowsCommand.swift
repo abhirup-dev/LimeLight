@@ -1,5 +1,5 @@
 import Foundation
-import FocusFXCore
+import LimeCore
 
 enum WindowsCommand {
     static func run(_ args: [String]) {

@@ -1,5 +1,5 @@
 import XCTest
-@testable import FocusFXCore
+@testable import LimeCore
 
 final class RuleResolverTests: XCTestCase {
     private func compile(_ raw: String) -> ConfigSnapshot {

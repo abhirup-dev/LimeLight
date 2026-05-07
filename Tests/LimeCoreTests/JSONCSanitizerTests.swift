@@ -1,5 +1,5 @@
 import XCTest
-@testable import FocusFXCore
+@testable import LimeCore
 
 final class JSONCSanitizerTests: XCTestCase {
     func testStripsLineComments() throws {

@@ -3,5 +3,5 @@ import Foundation
 /// Transient Metal-backed focus effects (cometRing, neon, workspacePulse, …).
 public final class EffectEngine {
     public init() {}
-    // Implementation lands in focusfx-18.
+    // Implementation lands in the planned phase.
 }

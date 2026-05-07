@@ -1,6 +1,6 @@
 import Foundation
 
-/// Identity returned by the daemon over IPC and surfaced by `focusfx status`.
+/// Identity returned by the daemon over IPC and surfaced by `limelight status`.
 public struct DaemonInfo: Codable, Sendable, Equatable {
     public let version: String
     public let pid: Int32
@@ -37,15 +37,15 @@ public struct VersionInfo: Codable, Sendable, Equatable {
 
     public static let current: VersionInfo = {
         #if DEBUG
-        return VersionInfo(version: FocusFX.version, buildConfig: "debug")
+        return VersionInfo(version: Lime.version, buildConfig: "debug")
         #else
-        return VersionInfo(version: FocusFX.version, buildConfig: "release")
+        return VersionInfo(version: Lime.version, buildConfig: "release")
         #endif
     }()
 }
 
-extension FocusFX {
-    /// Resolves `~/Library/Application Support/FocusFX/...` paths.
+extension Lime {
+    /// Resolves `~/Library/Application Support/LimeLight/...` paths.
     public static func userPath(_ relative: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return (home as NSString).appendingPathComponent(relative)

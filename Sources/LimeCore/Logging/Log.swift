@@ -2,7 +2,7 @@ import Foundation
 import OSLog
 
 public enum Log {
-    public static let subsystem = "dev.focusfx"
+    public static let subsystem = "dev.abhirup.lime"
 
     public static let core = Logger(subsystem: subsystem, category: "core")
     public static let ipc = Logger(subsystem: subsystem, category: "ipc")

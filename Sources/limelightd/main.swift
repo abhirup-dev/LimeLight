@@ -1,25 +1,25 @@
 import AppKit
 import Foundation
-import FocusFXCore
+import LimeCore
 
 let args = CommandLine.arguments.dropFirst()
 
 if args.contains("--version") {
-    print("FocusFXDaemon \(FocusFX.version)")
+    print("limelightd \(Lime.version)")
     exit(0)
 }
 
 if args.contains("--help") || args.contains("-h") {
     print("""
-    FocusFXDaemon \(FocusFX.version)
+    limelightd \(Lime.version)
 
-    The FocusFX background daemon. Normally launched as the FocusFX.app
+    The LimeLight background daemon. Normally launched as the LimeLight.app
     bundle (LSUIElement), it can also be run directly for development.
 
     Usage:
-      FocusFXDaemon              Run the daemon (foreground).
-      FocusFXDaemon --version    Print version and exit.
-      FocusFXDaemon --help       Print this help and exit.
+      limelightd              Run the daemon (foreground).
+      limelightd --version    Print version and exit.
+      limelightd --help       Print this help and exit.
     """)
     exit(0)
 }
@@ -31,10 +31,10 @@ app.setActivationPolicy(.accessory) // Reinforces LSUIElement for direct-launch.
 
 DaemonSignals.install {
     DispatchQueue.main.async {
-        Log.core.notice("FocusFX daemon: termination signal received")
+        Log.core.notice("LimeLight daemon: termination signal received")
         NSApp.terminate(nil)
     }
 }
 
-Log.core.notice("FocusFX daemon \(FocusFX.version, privacy: .public) starting (pid=\(getpid()))")
+Log.core.notice("LimeLight daemon \(Lime.version, privacy: .public) starting (pid=\(getpid()))")
 app.run()

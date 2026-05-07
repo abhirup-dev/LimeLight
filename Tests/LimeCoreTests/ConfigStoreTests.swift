@@ -1,5 +1,5 @@
 import XCTest
-@testable import FocusFXCore
+@testable import LimeCore
 
 final class ConfigStoreTests: XCTestCase {
     private static let planSampleConfig = """

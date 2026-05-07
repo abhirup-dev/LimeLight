@@ -1,4 +1,4 @@
-# FocusFX Progress Plan
+# LimeLight Progress Plan
 
 This file tracks the staged path to a v0 implementation. Each phase should be self-contained: it must leave the app buildable, testable, and measurably stable before moving on.
 
@@ -11,8 +11,8 @@ Goal: create a minimal buildable project with app, CLI, test targets, and shared
 Deliverables:
 
 - Swift/Xcode project targeting macOS 14.0+ with Swift 5.10 compatibility.
-- `FocusFX.app` minimal menu bar daemon.
-- `focusfx` CLI target with `--help` and `--version`.
+- `LimeLight.app` minimal menu bar daemon.
+- `limelight` CLI target with `--help` and `--version`.
 - Shared module for protocol/config/domain types.
 - Unit test target wired into the build.
 - Basic logging and signpost helpers for performance instrumentation.
@@ -33,7 +33,7 @@ Verification:
 
 Status:
 
-- [x] focusfx-1.1 Scaffold macOS project targets — `Package.swift` with `FocusFXCore` + `FocusFXDaemon`/`focusfx`/`borders` executables + tests + `CSkyLight` system-library module + `Scripts/bundle-app.sh`.
+- [x] focusfx-1.1 Scaffold macOS project targets — `Package.swift` with `LimeCore` + `limelightd`/`limelight`/`borders` executables + tests + `CSkyLight` system-library module + `Scripts/bundle-app.sh`.
 - [x] focusfx-1.2 Daemon, CLI, models, logging baseline — NSApplication accessory app with menu-bar status item, GCD-based `SIGINT`/`SIGTERM` handlers; CLI `--help`/`--version`; `DaemonInfo` / `VersionInfo`; OSLog `Logger` + `OSSignposter` + `mainThreadBudget()` instrument.
 - [x] focusfx-1.3 Baseline launch/idle metrics (recorded below).
 
@@ -43,7 +43,7 @@ Status:
 swift build
 ./Scripts/bundle-app.sh debug
 
-.build/FocusFX.app/Contents/MacOS/FocusFXDaemon &
+.build/LimeLight.app/Contents/MacOS/limelightd &
 PID=$!
 sleep 5
 ps -o pid,rss,%cpu,etime,comm -p $PID
@@ -51,7 +51,7 @@ top -l 2 -pid $PID -stats pid,cpu,mem,command | tail -3   # use the SECOND sampl
 kill -TERM $PID
 ```
 
-`ps` reports cumulative `%CPU` since launch; `top -l 2` (and using the second sample) reports the instantaneous interval. For deeper profiling: `xcrun xctrace record --launch -- .build/FocusFX.app/Contents/MacOS/FocusFXDaemon`.
+`ps` reports cumulative `%CPU` since launch; `top -l 2` (and using the second sample) reports the instantaneous interval. For deeper profiling: `xcrun xctrace record --launch -- .build/LimeLight.app/Contents/MacOS/limelightd`.
 
 ### Baseline (2026-05-07, debug, macOS 14.7.3 / Xcode 15.4)
 
@@ -80,15 +80,15 @@ No regression vs. Phase 0 baseline. Re-record after WindowTracker / BorderEngine
 
 ## Phase 1: IPC and CLI Control Plane
 
-Goal: make `FocusFX.app` controllable through a non-blocking local protocol before building rendering behavior.
+Goal: make `LimeLight.app` controllable through a non-blocking local protocol before building rendering behavior.
 
 Deliverables:
 
-- Unix domain socket server at `~/Library/Application Support/FocusFX/focusfx.sock`.
+- Unix domain socket server at `~/Library/Application Support/LimeLight/limelight.sock`.
 - Newline-delimited JSON request/response protocol.
-- `focusfx status --json`.
-- `focusfx daemon open`.
-- `focusfx daemon quit`.
+- `limelight status --json`.
+- `limelight daemon open`.
+- `limelight daemon quit`.
 - Request timeout and clear error handling.
 - IPC server runs off-main.
 
@@ -117,14 +117,14 @@ Goal: load and validate a hackable config without impacting runtime responsivene
 
 Deliverables:
 
-- Default config path: `~/Library/Application Support/FocusFX/config.jsonc`.
+- Default config path: `~/Library/Application Support/LimeLight/config.jsonc`.
 - JSONC parser supporting comments and trailing commas.
 - Config schema model for performance, borders, effects, popup, idle return, rules, and exclude rules.
 - Immutable compiled config snapshot.
 - Regex compilation for window-title rules.
-- `focusfx config path`.
-- `focusfx config validate`.
-- `focusfx reload`.
+- `limelight config path`.
+- `limelight config validate`.
+- `limelight reload`.
 
 Performance focus:
 
@@ -154,8 +154,8 @@ Deliverables:
 - `WindowTracker` using SkyLight/SLS for strict JankyBorders-style window tracking.
 - Accessibility fallback for focused window metadata and titles.
 - Cached window registry keyed by window ID.
-- Focused window query for `focusfx current-window --json`.
-- `focusfx windows --json`.
+- Focused window query for `limelight current-window --json`.
+- `limelight windows --json`.
 - Event coalescing for move/resize/focus bursts.
 - Per-window generation counters to reject stale async work.
 
@@ -189,10 +189,10 @@ Deliverables:
 - Active and inactive border drawing.
 - Runtime style updates.
 - JankyBorders-compatible `borders` shim.
-- `focusfx borders enable`.
-- `focusfx borders disable`.
-- `focusfx borders style`.
-- `focusfx borders redraw-all`.
+- `limelight borders enable`.
+- `limelight borders disable`.
+- `limelight borders style`.
+- `limelight borders redraw-all`.
 - Support `active_color`, `inactive_color`, `background_color`, `width`, `style`, `order`, `hidpi`, `blacklist`, `whitelist`, `ax_focus`, and `apply-to`.
 
 Performance focus:
@@ -224,7 +224,7 @@ Deliverables:
 
 - `EffectEngine` with transparent click-through overlay window.
 - Metal renderer with `neon`, `shockwave`, `line`, and `cometRing`.
-- `focusfx trigger`.
+- `limelight trigger`.
 - Effect selection from config rules.
 - Effect duration, color, and target window overrides.
 - Renderer pauses when inactive.
@@ -240,7 +240,7 @@ Verification:
 
 - Unit test: effect config resolution by rule and CLI override.
 - Unit test: invalid effect name returns stable error.
-- Integration test: `focusfx trigger --effect neon` succeeds.
+- Integration test: `limelight trigger --effect neon` succeeds.
 - Integration test: repeated trigger burst does not hang daemon.
 - Performance test: idle GPU activity stops after effect completion.
 - Manual check: effects render on focused window and never intercept mouse input.
@@ -256,7 +256,7 @@ Goal: add contextual popups and focus-return-after-idle behavior.
 Deliverables:
 
 - `PopupEngine` with click-through transparent overlay window.
-- `focusfx popup`.
+- `limelight popup`.
 - Popup placement rules.
 - Popup content with app icon, app name, window title, title, and message.
 - `IdleReturnDetector` using HID event idle time.
@@ -274,7 +274,7 @@ Verification:
 - Unit test: idle active -> idle -> pending return -> emitted transitions.
 - Unit test: popup message template substitution such as `{idleMinutes}`.
 - Unit test: popup placement inside target frame.
-- Integration test: `focusfx popup --title Test --message Hello` succeeds.
+- Integration test: `limelight popup --title Test --message Hello` succeeds.
 - Manual check: return after configured idle threshold shows popup exactly once.
 - Manual check: popup does not steal focus or block clicks.
 
@@ -288,7 +288,7 @@ Goal: make the app easy to automate from the user’s current window-management 
 
 Deliverables:
 
-- `focusfx.lua` Hammerspoon helper.
+- `limelight.lua` Hammerspoon helper.
 - Example Hammerspoon hotkeys.
 - AeroSpace startup snippets.
 - AeroSpace workspace-change hook snippet.
@@ -304,7 +304,7 @@ Performance focus:
 Verification:
 
 - Unit test: CLI command construction in Lua examples, if test harness is available.
-- Integration test: `focusfx trigger` and `focusfx popup` are safe for repeated hotkey calls.
+- Integration test: `limelight trigger` and `limelight popup` are safe for repeated hotkey calls.
 - Manual check: AeroSpace `after-startup-command` starts daemon and borders.
 - Manual check: AeroSpace workspace-change hook triggers a short effect.
 - Manual check: Hammerspoon hotkey triggers effect without delay.
@@ -319,7 +319,7 @@ Goal: stabilize performance, crash behavior, diagnostics, and developer ergonomi
 
 Deliverables:
 
-- `focusfx perf --json`.
+- `limelight perf --json`.
 - Structured diagnostics for AX permission, SkyLight availability, socket state, config validity, and render state.
 - Crash-safe cleanup of socket and stale overlay/border windows.
 - README with install, config, CLI, Hammerspoon, and AeroSpace examples.

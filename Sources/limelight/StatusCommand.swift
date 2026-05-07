@@ -1,5 +1,5 @@
 import Foundation
-import FocusFXCore
+import LimeCore
 
 enum StatusCommand {
     static func run(_ args: [String]) {
@@ -23,7 +23,7 @@ enum StatusCommand {
             FileHandle.standardOutput.write(data)
             FileHandle.standardOutput.write(Data("\n".utf8))
         } catch {
-            FileHandle.standardError.write(Data("focusfx: failed to render status: \(error)\n".utf8))
+            FileHandle.standardError.write(Data("limelight: failed to render status: \(error)\n".utf8))
             exit(1)
         }
     }

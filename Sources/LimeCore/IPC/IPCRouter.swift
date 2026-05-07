@@ -7,7 +7,7 @@ public final class IPCRouter: @unchecked Sendable {
     public typealias Handler = (IPCRequest) -> IPCResponse
 
     private var handlers: [String: Handler] = [:]
-    private let queue = DispatchQueue(label: "dev.focusfx.ipc.router", attributes: .concurrent)
+    private let queue = DispatchQueue(label: "dev.abhirup.lime.ipc.router", attributes: .concurrent)
 
     public init() {}
 

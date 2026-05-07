@@ -2,42 +2,42 @@
 import PackageDescription
 
 let package = Package(
-    name: "FocusFX",
+    name: "LimeLight",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .library(name: "FocusFXCore", targets: ["FocusFXCore"]),
-        .executable(name: "FocusFXDaemon", targets: ["FocusFXDaemon"]),
-        .executable(name: "focusfx", targets: ["focusfx"]),
+        .library(name: "LimeCore", targets: ["LimeCore"]),
+        .executable(name: "limelightd", targets: ["limelightd"]),
+        .executable(name: "limelight", targets: ["limelight"]),
         .executable(name: "borders", targets: ["borders"]),
     ],
     targets: [
         .systemLibrary(name: "CSkyLight"),
         .target(
-            name: "FocusFXCore",
+            name: "LimeCore",
             dependencies: ["CSkyLight"],
-            path: "Sources/FocusFXCore"
+            path: "Sources/LimeCore"
         ),
         .executableTarget(
-            name: "FocusFXDaemon",
-            dependencies: ["FocusFXCore"],
-            path: "Sources/FocusFXDaemon"
+            name: "limelightd",
+            dependencies: ["LimeCore"],
+            path: "Sources/limelightd"
         ),
         .executableTarget(
-            name: "focusfx",
-            dependencies: ["FocusFXCore"],
-            path: "Sources/focusfx"
+            name: "limelight",
+            dependencies: ["LimeCore"],
+            path: "Sources/limelight"
         ),
         .executableTarget(
             name: "borders",
-            dependencies: ["FocusFXCore"],
+            dependencies: ["LimeCore"],
             path: "Sources/borders"
         ),
         .testTarget(
-            name: "FocusFXCoreTests",
-            dependencies: ["FocusFXCore"],
-            path: "Tests/FocusFXCoreTests"
+            name: "LimeCoreTests",
+            dependencies: ["LimeCore"],
+            path: "Tests/LimeCoreTests"
         ),
     ]
 )

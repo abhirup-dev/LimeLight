@@ -1,5 +1,5 @@
 import XCTest
-@testable import FocusFXCore
+@testable import LimeCore
 
 /// Verifies the CLI's "daemon never hangs" guarantee at the IPC layer:
 /// connecting to a missing socket returns `connectFailed` quickly, not a hang.

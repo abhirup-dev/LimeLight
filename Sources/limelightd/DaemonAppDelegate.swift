@@ -1,13 +1,13 @@
 import AppKit
 import Foundation
-import FocusFXCore
+import LimeCore
 
 final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private let startedAt = Date()
     private let router = IPCRouter()
     private var ipcServer: IPCServer?
-    private let configStore = ConfigStore(path: FocusFX.resolvedConfigPath)
+    private let configStore = ConfigStore(path: Lime.resolvedConfigPath)
     private let windowTracker = WindowTracker()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -26,11 +26,11 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
         windowTracker.onFocusChange { wid in
             Log.tracker.debug("focus changed -> \(wid.map { "\($0)" } ?? "nil", privacy: .public)")
         }
-        Log.core.info("FocusFX daemon ready")
+        Log.core.info("LimeLight daemon ready")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        Log.core.notice("FocusFX daemon terminating")
+        Log.core.notice("LimeLight daemon terminating")
         ipcServer?.stop()
     }
 
@@ -110,7 +110,7 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // `config.validate`: parse the file (or text supplied via args.text) and report
-        // diagnostics WITHOUT publishing if invalid. Used by `focusfx config validate`.
+        // diagnostics WITHOUT publishing if invalid. Used by `limelight config validate`.
         router.register("config.validate") { req in
             // Reuse the daemon's store path; future args could supply alternative text.
             let result = store.loadSync()
@@ -143,12 +143,12 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startIPCServer() {
-        let server = IPCServer(socketPath: FocusFX.resolvedSocketPath, router: router)
+        let server = IPCServer(socketPath: Lime.resolvedSocketPath, router: router)
         do {
             try server.start()
             self.ipcServer = server
         } catch {
-            FileHandle.standardError.write(Data("FocusFX: \(error)\n".utf8))
+            FileHandle.standardError.write(Data("LimeLight: \(error)\n".utf8))
             Log.core.fault("IPC server failed to start: \(String(describing: error), privacy: .public)")
             // Singleton daemon contract: refuse to keep running without a control plane.
             NSApp.terminate(nil)
@@ -160,21 +160,21 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
             button.title = "✦"
-            button.toolTip = "FocusFX \(FocusFX.version)"
+            button.toolTip = "LimeLight \(Lime.version)"
         }
 
         let menu = NSMenu()
-        menu.addItem(withTitle: "FocusFX \(FocusFX.version)", action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "LimeLight \(Lime.version)", action: nil, keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Reload Config", action: #selector(reloadConfig), keyEquivalent: "r").target = self
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit FocusFX", action: #selector(quit), keyEquivalent: "q").target = self
+        menu.addItem(withTitle: "Quit LimeLight", action: #selector(quit), keyEquivalent: "q").target = self
         item.menu = menu
         self.statusItem = item
     }
 
     @objc private func reloadConfig() {
-        Log.core.info("reload requested from menu — config reload lands in focusfx-5")
+        Log.core.info("reload requested from menu — config reload lands in the planned phase")
     }
 
     @objc private func quit() {
@@ -183,11 +183,11 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
 
     func info() -> DaemonInfo {
         DaemonInfo(
-            version: FocusFX.version,
+            version: Lime.version,
             pid: getpid(),
-            bundleIdentifier: Bundle.main.bundleIdentifier ?? "dev.focusfx.daemon",
-            socketPath: FocusFX.resolvedSocketPath,
-            configPath: FocusFX.resolvedConfigPath,
+            bundleIdentifier: Bundle.main.bundleIdentifier ?? "dev.abhirup.lime",
+            socketPath: Lime.resolvedSocketPath,
+            configPath: Lime.resolvedConfigPath,
             startedAt: startedAt
         )
     }
