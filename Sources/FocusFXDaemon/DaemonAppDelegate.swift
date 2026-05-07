@@ -8,6 +8,7 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
     private let router = IPCRouter()
     private var ipcServer: IPCServer?
     private let configStore = ConfigStore(path: FocusFX.resolvedConfigPath)
+    private let windowTracker = WindowTracker()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         mainThreadBudget("daemon.didFinishLaunching") {
@@ -21,6 +22,10 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
         }
         registerCommands()
         startIPCServer()
+        windowTracker.start()
+        windowTracker.onFocusChange { wid in
+            Log.tracker.debug("focus changed -> \(wid.map { "\($0)" } ?? "nil", privacy: .public)")
+        }
         Log.core.info("FocusFX daemon ready")
     }
 
@@ -31,15 +36,59 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
 
     private func registerCommands() {
         let cachedInfo = info()
+        let tracker = windowTracker
         router.register("status") { req in
             // Cached snapshot — no main-thread fan-out, no full window rescan.
             do {
-                let payload = try IPCCoding.makeEncoder().encode(cachedInfo)
-                let any = try IPCCoding.makeDecoder().decode(AnyCodable.self, from: payload)
+                let info = try IPCCoding.makeEncoder().encode(cachedInfo)
+                guard var dict = try JSONSerialization.jsonObject(with: info) as? [String: Any] else {
+                    return IPCResponse.failure(id: req.id, code: "encode_failed", message: "unexpected status shape")
+                }
+                dict["accessibility"] = tracker.accessibility.rawValue
+                dict["windowCount"] = tracker.snapshot.count
+                let merged = try JSONSerialization.data(withJSONObject: dict, options: [])
+                let any = try IPCCoding.makeDecoder().decode(AnyCodable.self, from: merged)
                 return IPCResponse.success(id: req.id, result: any)
             } catch {
                 return IPCResponse.failure(id: req.id, code: "encode_failed", message: "\(error)")
             }
+        }
+
+        router.register("windows.snapshot") { req in
+            let windows = tracker.snapshot.sorted { $0.windowID < $1.windowID }
+            let entries: [AnyCodable] = windows.map { w in
+                AnyCodable([
+                    "windowID": AnyCodable(Int(w.windowID)),
+                    "ownerPID": AnyCodable(Int(w.ownerPID)),
+                    "appName": AnyCodable(w.appName ?? NSNull()),
+                    "bundleIdentifier": AnyCodable(w.bundleIdentifier ?? NSNull()),
+                    "title": AnyCodable(w.title ?? NSNull()),
+                    "frame": AnyCodable([
+                        "x": AnyCodable(Double(w.frame.origin.x)),
+                        "y": AnyCodable(Double(w.frame.origin.y)),
+                        "width": AnyCodable(Double(w.frame.size.width)),
+                        "height": AnyCodable(Double(w.frame.size.height)),
+                    ] as [String: AnyCodable]),
+                    "isOnScreen": AnyCodable(w.isOnScreen),
+                ] as [String: AnyCodable])
+            }
+            return IPCResponse.success(id: req.id, result: AnyCodable([
+                "count": AnyCodable(entries.count),
+                "windows": AnyCodable(entries),
+                "focusedWindowID": AnyCodable(tracker.currentFocusedWindowID.map { Int($0) } ?? NSNull()),
+            ] as [String: AnyCodable]))
+        }
+
+        router.register("current-window") { req in
+            guard let w = tracker.currentFocusedWindow else {
+                return IPCResponse.success(id: req.id, result: AnyCodable(NSNull()))
+            }
+            return IPCResponse.success(id: req.id, result: AnyCodable([
+                "windowID": AnyCodable(Int(w.windowID)),
+                "ownerPID": AnyCodable(Int(w.ownerPID)),
+                "appName": AnyCodable(w.appName ?? NSNull()),
+                "title": AnyCodable(w.title ?? NSNull()),
+            ] as [String: AnyCodable]))
         }
         router.register("ping") { req in
             IPCResponse.success(id: req.id, result: AnyCodable("pong"))

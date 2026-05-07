@@ -4,42 +4,17 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CoreGraphics.h>
 
-// Private SkyLight / SLS API declarations.
-// These symbols ship in /System/Library/PrivateFrameworks/SkyLight.framework
-// and are not part of any public SDK. Consumers must link -framework SkyLight
-// from /System/Library/PrivateFrameworks at link time.
-//
-// Surface kept intentionally small for now — the BorderEngine and WindowTracker
-// epics will extend this with the symbols they actually need.
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+// Type-only declarations for private SkyLight / SLS APIs.
+// We do NOT link SkyLight at build time — symbols are resolved via dlopen+dlsym
+// at runtime so the daemon degrades gracefully if Apple renames a symbol.
 
 typedef int CGSConnectionID;
+typedef uint32_t CGSWindowID;
+typedef uint64_t CGSSpaceID;
 
-extern CGSConnectionID SLSMainConnectionID(void);
-
-// Active-window query. Returns the window ID currently considered "key" for the
-// front process by the WindowServer. Useful for focus tracking before AX events.
-extern CGError SLSGetActiveWindow(CGSConnectionID cid, uint32_t *outWindowID);
-
-// Window list / introspection.
-extern CFArrayRef SLSCopyWindowsWithOptionsAndTags(
-    CGSConnectionID cid,
-    uint32_t owner,
-    CFArrayRef spaces,
-    uint32_t options,
-    uint64_t *setTags,
-    uint64_t *clearTags
-);
-
-// Frame/owner queries used by border attachment.
-extern CGError SLSGetWindowBounds(CGSConnectionID cid, uint32_t windowID, CGRect *outBounds);
-extern CGError SLSGetWindowOwner(CGSConnectionID cid, uint32_t windowID, int32_t *outPid);
-
-#ifdef __cplusplus
-}
-#endif
+// Function prototypes are exposed only as typedefs so dlsym callers can cast.
+typedef CGSConnectionID (*SLSMainConnectionIDFn)(void);
+typedef CGError (*SLSGetWindowBoundsFn)(CGSConnectionID, CGSWindowID, CGRect *);
+typedef CGError (*SLSGetWindowOwnerFn)(CGSConnectionID, CGSWindowID, int32_t *);
 
 #endif // CSKYLIGHT_H

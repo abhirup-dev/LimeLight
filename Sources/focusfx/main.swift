@@ -38,6 +38,8 @@ func runHelp() -> Never {
     print("  config path                Print the config file path.")
     print("  config validate            Validate the config and print diagnostics.")
     print("  reload                     Re-read config from disk and apply if valid.")
+    print("  windows [--json]           List cached windows.")
+    print("  current-window [--json]    Print the focused window.")
     print("  --help, -h                 Show this help.")
     print("  --version, -v              Print version.")
     exit(0)
@@ -69,6 +71,10 @@ case "config":
     ConfigCommand.run(rest)
 case "reload":
     ReloadCommand.run(rest)
+case "windows":
+    WindowsCommand.run(rest)
+case "current-window":
+    CurrentWindowCommand.run(rest)
 default:
     FileHandle.standardError.write(Data("focusfx: command '\(command)' not implemented yet\n".utf8))
     exit(2)

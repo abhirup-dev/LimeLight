@@ -79,15 +79,18 @@ public struct AnyCodable: Codable, Sendable {
         case is NSNull: try c.encodeNil()
         case let b as Bool: try c.encode(b)
         case let i as Int: try c.encode(i)
+        case let i as Int32: try c.encode(i)
         case let i as Int64: try c.encode(i)
+        case let i as UInt32: try c.encode(i)
         case let d as Double: try c.encode(d)
+        case let f as Float: try c.encode(Double(f))
         case let s as String: try c.encode(s)
         case let arr as [AnyCodable]: try c.encode(arr)
         case let dict as [String: AnyCodable]: try c.encode(dict)
         default:
             throw EncodingError.invalidValue(
                 value,
-                EncodingError.Context(codingPath: encoder.codingPath, debugDescription: "Unsupported value")
+                EncodingError.Context(codingPath: encoder.codingPath, debugDescription: "Unsupported value: \(type(of: value))")
             )
         }
     }
