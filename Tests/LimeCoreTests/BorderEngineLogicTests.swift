@@ -1,0 +1,205 @@
+import XCTest
+import CoreGraphics
+@testable import LimeCore
+
+final class BorderEngineLogicTests: XCTestCase {
+    // MARK: - Y-flip math
+
+    func testCocoaFrameFlipFromCGForPrimaryDisplay() {
+        // 1080-tall primary display. CG y=0 = top; Cocoa y=0 = bottom.
+        let cg = CGRect(x: 100, y: 50, width: 800, height: 600)
+        let cocoa = BorderEngineLogic.cocoaFrame(from: cg, primaryDisplayHeight: 1080)
+        XCTAssertEqual(cocoa.origin.x, 100)
+        XCTAssertEqual(cocoa.origin.y, 1080 - 50 - 600) // 430
+        XCTAssertEqual(cocoa.size.width, 800)
+        XCTAssertEqual(cocoa.size.height, 600)
+    }
+
+    func testCocoaFrameFlipNearTopOfScreen() {
+        // A window that's near the top in CG (small y) ends up near the top in Cocoa
+        // (large y, since Cocoa y grows up).
+        let cg = CGRect(x: 0, y: 0, width: 200, height: 100)
+        let cocoa = BorderEngineLogic.cocoaFrame(from: cg, primaryDisplayHeight: 900)
+        XCTAssertEqual(cocoa.origin.y, 800) // 900 - 0 - 100
+    }
+
+    func testCocoaFrameFlipNearBottomOfScreen() {
+        // A window near the bottom in CG (large y) ends up near the bottom in Cocoa
+        // (small y).
+        let cg = CGRect(x: 0, y: 800, width: 200, height: 100)
+        let cocoa = BorderEngineLogic.cocoaFrame(from: cg, primaryDisplayHeight: 900)
+        XCTAssertEqual(cocoa.origin.y, 0)
+    }
+
+    func testCocoaFrameSecondaryDisplayToTheRight() {
+        // Multi-display: CG and Cocoa both share their y-origin from the primary
+        // display, so the formula doesn't change for a window on a display to the
+        // right (different x, same y reference). Cocoa flip still uses primary height.
+        let cg = CGRect(x: 1920, y: 100, width: 600, height: 400) // window at x=1920
+        let cocoa = BorderEngineLogic.cocoaFrame(from: cg, primaryDisplayHeight: 1080)
+        XCTAssertEqual(cocoa.origin.x, 1920)
+        XCTAssertEqual(cocoa.origin.y, 1080 - 100 - 400) // 580
+    }
+
+    // MARK: - desiredBorders
+
+    private func makeSnapshot(rules: [Rule] = [], excludes: [WindowMatch] = []) -> ConfigSnapshot {
+        ConfigSnapshot(
+            performance: .default,
+            borders: .default,
+            defaultEffect: .default,
+            popup: .default,
+            idleReturn: .default,
+            rules: rules,
+            exclude: excludes,
+            diagnostics: []
+        )
+    }
+
+    private func w(_ id: WindowID, pid: Int32 = 100, app: String = "Warp", title: String = "t",
+                   frame: CGRect = CGRect(x: 0, y: 0, width: 800, height: 600),
+                   onScreen: Bool = true) -> WindowState {
+        WindowState(windowID: id, ownerPID: pid, appName: app, title: title, frame: frame, isOnScreen: onScreen)
+    }
+
+    func testDesiredBordersFocusedIsActiveOthersAreInactive() {
+        let inputs = BorderEngineLogic.Inputs(
+            windows: [1: w(1), 2: w(2, app: "Finder")],
+            focusedWindowID: 1,
+            snapshot: makeSnapshot(),
+            primaryDisplayHeight: 1080
+        )
+        let result = BorderEngineLogic.desiredBorders(inputs)
+        XCTAssertEqual(result.count, 2)
+        XCTAssertTrue(result[1]?.isActive == true)
+        XCTAssertTrue(result[2]?.isActive == false)
+        XCTAssertEqual(result[1]?.color, BordersConfig.default.active)
+        XCTAssertEqual(result[2]?.color, BordersConfig.default.inactive)
+    }
+
+    func testDesiredBordersBorderEnabledFalseProducesEmpty() {
+        var snap = makeSnapshot()
+        snap = ConfigSnapshot(
+            performance: snap.performance,
+            borders: BordersConfig(
+                enabled: false, style: .round, order: .below, width: 5, hidpi: false,
+                active: snap.borders.active, inactive: snap.borders.inactive,
+                background: snap.borders.background
+            ),
+            defaultEffect: snap.defaultEffect, popup: snap.popup,
+            idleReturn: snap.idleReturn, rules: [], exclude: [], diagnostics: []
+        )
+        let inputs = BorderEngineLogic.Inputs(
+            windows: [1: w(1)], focusedWindowID: 1, snapshot: snap, primaryDisplayHeight: 1080
+        )
+        XCTAssertTrue(BorderEngineLogic.desiredBorders(inputs).isEmpty)
+    }
+
+    func testDesiredBordersExcludesOffScreenAndZeroSized() {
+        let inputs = BorderEngineLogic.Inputs(
+            windows: [
+                1: w(1),
+                2: w(2, onScreen: false),
+                3: w(3, frame: CGRect(x: 0, y: 0, width: 0, height: 0)),
+            ],
+            focusedWindowID: 1,
+            snapshot: makeSnapshot(),
+            primaryDisplayHeight: 1080
+        )
+        let result = BorderEngineLogic.desiredBorders(inputs)
+        XCTAssertEqual(Set(result.keys), Set([1]))
+    }
+
+    func testDesiredBordersHonorsExcludeList() {
+        let exclude = [
+            WindowMatch(appName: "System Settings", bundleIdentifier: nil, windowTitleExact: nil,
+                        windowTitleContains: nil, windowTitleRegex: nil, windowID: nil, aerospaceWorkspace: nil)
+        ]
+        let inputs = BorderEngineLogic.Inputs(
+            windows: [
+                1: w(1),
+                2: w(2, app: "System Settings"),
+            ],
+            focusedWindowID: 1,
+            snapshot: makeSnapshot(excludes: exclude),
+            primaryDisplayHeight: 1080
+        )
+        let result = BorderEngineLogic.desiredBorders(inputs)
+        XCTAssertEqual(Set(result.keys), Set([1]))
+    }
+
+    func testDesiredBordersAppliesRuleOverrideWidthAndColor() {
+        let glow = ColorSpec.glow(.init(r: 0, g: 0.8, b: 1, a: 1))
+        let rule = Rule(
+            name: "warp",
+            match: WindowMatch(appName: "Warp", bundleIdentifier: nil, windowTitleExact: nil,
+                               windowTitleContains: nil, windowTitleRegex: nil, windowID: nil, aerospaceWorkspace: nil),
+            borderOverrides: Rule.BorderOverrides(active: glow, inactive: nil, width: 9.0, style: nil),
+            effect: nil
+        )
+        let inputs = BorderEngineLogic.Inputs(
+            windows: [1: w(1, app: "Warp")],
+            focusedWindowID: 1,
+            snapshot: makeSnapshot(rules: [rule]),
+            primaryDisplayHeight: 1080
+        )
+        let spec = BorderEngineLogic.desiredBorders(inputs)[1]
+        XCTAssertEqual(spec?.width, 9.0)
+        XCTAssertEqual(spec?.color, glow)
+    }
+
+    // MARK: - diff
+
+    private func spec(_ id: WindowID, frame: CGRect = CGRect(x: 0, y: 0, width: 100, height: 100)) -> BorderSpec {
+        BorderSpec(windowID: id, frame: frame, width: 5, style: .round,
+                   color: BordersConfig.default.active, isActive: true)
+    }
+
+    func testDiffEmptyToNonEmptyIsAllCreate() {
+        let next: [WindowID: BorderSpec] = [1: spec(1), 2: spec(2)]
+        let d = BorderEngineLogic.diff(prev: [:], next: next)
+        XCTAssertEqual(d.toCreate.count, 2)
+        XCTAssertTrue(d.toUpdate.isEmpty)
+        XCTAssertTrue(d.toDestroy.isEmpty)
+    }
+
+    func testDiffNonEmptyToEmptyIsAllDestroy() {
+        let prev: [WindowID: BorderSpec] = [1: spec(1), 2: spec(2)]
+        let d = BorderEngineLogic.diff(prev: prev, next: [:])
+        XCTAssertEqual(d.toDestroy, [1, 2])
+        XCTAssertTrue(d.toCreate.isEmpty)
+        XCTAssertTrue(d.toUpdate.isEmpty)
+    }
+
+    func testDiffSameSpecsIsNoop() {
+        let s = spec(1)
+        let d = BorderEngineLogic.diff(prev: [1: s], next: [1: s])
+        XCTAssertTrue(d.toCreate.isEmpty)
+        XCTAssertTrue(d.toUpdate.isEmpty)
+        XCTAssertTrue(d.toDestroy.isEmpty)
+    }
+
+    func testDiffChangedSpecGoesIntoUpdate() {
+        let prev = spec(1, frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        let next = spec(1, frame: CGRect(x: 50, y: 50, width: 100, height: 100))
+        let d = BorderEngineLogic.diff(prev: [1: prev], next: [1: next])
+        XCTAssertEqual(d.toUpdate.count, 1)
+        XCTAssertTrue(d.toCreate.isEmpty)
+        XCTAssertTrue(d.toDestroy.isEmpty)
+    }
+
+    func testDiffMixedScenario() {
+        let prev: [WindowID: BorderSpec] = [
+            1: spec(1, frame: CGRect(x: 0, y: 0, width: 100, height: 100)),
+            2: spec(2),
+        ]
+        let next: [WindowID: BorderSpec] = [
+            1: spec(1, frame: CGRect(x: 10, y: 10, width: 100, height: 100)),  // updated
+            3: spec(3),                                                         // created
+        ]
+        let d = BorderEngineLogic.diff(prev: prev, next: next)
+        XCTAssertEqual(d.toUpdate.map(\.windowID), [1])
+        XCTAssertEqual(d.toCreate.map(\.windowID), [3])
+        XCTAssertEqual(d.toDestroy, [2])
+    }
+}

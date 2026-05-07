@@ -8,7 +8,10 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
     private let router = IPCRouter()
     private var ipcServer: IPCServer?
     private let configStore = ConfigStore(path: Lime.resolvedConfigPath)
-    private let windowTracker = WindowTracker()
+    private lazy var windowTracker = WindowTracker(coalesceMs: 16) { [weak self] batch in
+        self?.borderEngine?.handleCoalescedBatch(batch)
+    }
+    private var borderEngine: BorderEngine?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         mainThreadBudget("daemon.didFinishLaunching") {
@@ -22,11 +25,36 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
         }
         registerCommands()
         startIPCServer()
+        promptAccessibilityIfNeeded()
+        startBorderEngine()
         windowTracker.start()
         windowTracker.onFocusChange { wid in
             Log.tracker.debug("focus changed -> \(wid.map { "\($0)" } ?? "nil", privacy: .public)")
         }
         Log.core.info("LimeLight daemon ready")
+    }
+
+    private func startBorderEngine() {
+        let engine = BorderEngine(tracker: windowTracker, configStore: configStore)
+        self.borderEngine = engine
+        // Initial paint after the first window enumeration finishes —
+        // schedule slightly behind the tracker startup tick.
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.2) { [weak engine] in
+            engine?.recompute()
+        }
+    }
+
+    /// First-launch: nudge macOS to show the Accessibility prompt for this binary.
+    /// On subsequent launches with permission already granted, this is a cheap no-op.
+    /// Runs off-main; the system's TCC dialog is its own UI process.
+    private func promptAccessibilityIfNeeded() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let bridge = RealAXBridge()
+            if bridge.status == .denied {
+                _ = bridge.requestPermission()
+                Log.core.notice("Accessibility prompt presented; restart LimeLight after granting.")
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
