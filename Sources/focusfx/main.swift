@@ -35,6 +35,9 @@ func runHelp() -> Never {
     print("  daemon open                Launch FocusFX.app.")
     print("  daemon quit                Ask the running daemon to terminate.")
     print("  status [--json]            Print daemon status (cached, no rescan).")
+    print("  config path                Print the config file path.")
+    print("  config validate            Validate the config and print diagnostics.")
+    print("  reload                     Re-read config from disk and apply if valid.")
     print("  --help, -h                 Show this help.")
     print("  --version, -v              Print version.")
     exit(0)
@@ -62,7 +65,11 @@ case "daemon":
     DaemonCommand.run(rest)
 case "status":
     StatusCommand.run(rest)
+case "config":
+    ConfigCommand.run(rest)
+case "reload":
+    ReloadCommand.run(rest)
 default:
-    FileHandle.standardError.write(Data("focusfx: command '\(command)' not implemented yet (focusfx-5.3+)\n".utf8))
+    FileHandle.standardError.write(Data("focusfx: command '\(command)' not implemented yet\n".utf8))
     exit(2)
 }

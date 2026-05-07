@@ -66,6 +66,18 @@ Daemon left idle for 18 s on this developer machine:
 
 Plan targets (idle): CPU < 1.0%, RSS < 80 MB — baseline well under both. No `MTKView` draw loop, no polling sources. Daemon exits cleanly on `SIGTERM`. Re-record this table after each phase that adds long-running infrastructure (IPC server, window tracker, border engine, effect engine).
 
+### Re-baseline after Phase 1 (2026-05-07, debug)
+
+Daemon now also brings up `IPCServer` (off-main accept) and async-loads the config snapshot at startup.
+
+| Sample @ elapsed | RSS     | %CPU |
+|------------------|---------|------|
+| 5 s              | 23.4 MB | 0.0% |
+| 15 s             | 20.4 MB | 0.0% |
+| `top -l 2` (2nd) | 9.7 MB  | 0.0% |
+
+No regression vs. Phase 0 baseline. Re-record after WindowTracker / BorderEngine land.
+
 ## Phase 1: IPC and CLI Control Plane
 
 Goal: make `FocusFX.app` controllable through a non-blocking local protocol before building rendering behavior.

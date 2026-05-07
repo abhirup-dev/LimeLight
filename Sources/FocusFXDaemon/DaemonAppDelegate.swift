@@ -7,10 +7,17 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
     private let startedAt = Date()
     private let router = IPCRouter()
     private var ipcServer: IPCServer?
+    private let configStore = ConfigStore(path: FocusFX.resolvedConfigPath)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         mainThreadBudget("daemon.didFinishLaunching") {
             installStatusItem()
+        }
+        // Initial config load runs off-main; we keep the built-in defaults until it returns.
+        configStore.loadAsync { result in
+            if let err = result.parseError {
+                Log.config.error("initial config load failed: \(err, privacy: .public)")
+            }
         }
         registerCommands()
         startIPCServer()
@@ -44,6 +51,46 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
             }
             return IPCResponse.success(id: req.id, result: AnyCodable("terminating"))
         }
+
+        // `reload`: re-read the config file off-main and publish if valid.
+        // Synchronous from the IPC worker's perspective so the response carries the outcome.
+        let store = configStore
+        router.register("reload") { req in
+            let result = store.loadSync()
+            return Self.encodeReloadResponse(id: req.id, result: result)
+        }
+
+        // `config.validate`: parse the file (or text supplied via args.text) and report
+        // diagnostics WITHOUT publishing if invalid. Used by `focusfx config validate`.
+        router.register("config.validate") { req in
+            // Reuse the daemon's store path; future args could supply alternative text.
+            let result = store.loadSync()
+            return Self.encodeReloadResponse(id: req.id, result: result, validateOnly: true)
+        }
+
+        router.register("config.path") { req in
+            IPCResponse.success(id: req.id, result: AnyCodable(store.path))
+        }
+    }
+
+    private static func encodeReloadResponse(
+        id: String,
+        result: ConfigStore.LoadResult,
+        validateOnly: Bool = false
+    ) -> IPCResponse {
+        let payload: [String: AnyCodable] = [
+            "ok": AnyCodable(result.parseError == nil),
+            "applied": AnyCodable(!validateOnly && result.replacedActive),
+            "diagnostics": AnyCodable(result.snapshot.diagnostics.map { d -> AnyCodable in
+                AnyCodable([
+                    "severity": AnyCodable(d.severity.rawValue),
+                    "path": AnyCodable(d.path),
+                    "message": AnyCodable(d.message),
+                ] as [String: AnyCodable])
+            }),
+            "parseError": AnyCodable(result.parseError ?? NSNull()),
+        ]
+        return IPCResponse.success(id: id, result: AnyCodable(payload))
     }
 
     private func startIPCServer() {
