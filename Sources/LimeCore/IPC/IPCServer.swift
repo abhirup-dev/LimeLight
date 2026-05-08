@@ -27,7 +27,26 @@ public final class IPCServer {
     /// Maximum characters in a Unix domain socket path on macOS (sun_path is 104 bytes).
     public static let sunPathLimit = 104
 
+    /// Per-connection deadlines. Tunable so tests can shorten them.
+    public struct Timeouts: Sendable {
+        /// Max wait between fd accept and the first readable byte. Protects
+        /// against silent clients holding a worker.
+        public var firstByteSeconds: Double
+        /// Max wall-clock for receiving a full request frame. Protects
+        /// against slow-loris drips that never finish.
+        public var fullFrameSeconds: Double
+        /// Max wait for socket writability when sending the response.
+        public var writeSeconds: Double
+
+        public static let `default` = Timeouts(
+            firstByteSeconds: 2.0,
+            fullFrameSeconds: 5.0,
+            writeSeconds: 2.0
+        )
+    }
+
     public let socketPath: String
+    public let timeouts: Timeouts
     private let router: IPCRouter
     private let acceptQueue = DispatchQueue(label: "dev.abhirup.lime.ipc.accept", qos: .userInitiated)
     private let workQueue = DispatchQueue(label: "dev.abhirup.lime.ipc.work", qos: .userInitiated, attributes: .concurrent)
@@ -36,9 +55,10 @@ public final class IPCServer {
     private let started = DispatchSemaphore(value: 0)
     private var isStarted = false
 
-    public init(socketPath: String, router: IPCRouter) {
+    public init(socketPath: String, router: IPCRouter, timeouts: Timeouts = .default) {
         self.socketPath = socketPath
         self.router = router
+        self.timeouts = timeouts
     }
 
     /// Binds, listens, and starts accepting on a background queue. Returns once
@@ -179,41 +199,70 @@ public final class IPCServer {
             // Don't get killed by SIGPIPE if the client closes mid-response.
             var on: Int32 = 1
             _ = setsockopt(cfd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
-            // Accepted fd inherits O_NONBLOCK from the listener on macOS — clear it so
-            // the worker queue's read loop blocks until data arrives instead of
-            // spinning on EAGAIN (and currently treating EAGAIN as fatal).
+            // Keep accepted fd non-blocking. serveConnection drives reads/writes
+            // through poll() with deadlines so a silent or slow-loris client
+            // can't pin a worker thread (focusfx-lol).
             let cflags = fcntl(cfd, F_GETFL, 0)
-            _ = fcntl(cfd, F_SETFL, cflags & ~O_NONBLOCK)
-            workQueue.async { [router, weak self] in
-                self?.serveConnection(fd: cfd, router: router)
+            _ = fcntl(cfd, F_SETFL, cflags | O_NONBLOCK)
+            workQueue.async { [router, timeouts, weak self] in
+                self?.serveConnection(fd: cfd, router: router, timeouts: timeouts)
             }
         }
     }
 
     // MARK: - per-connection IO
 
-    private func serveConnection(fd: Int32, router: IPCRouter) {
+    private func serveConnection(fd: Int32, router: IPCRouter, timeouts: Timeouts) {
         dispatchPrecondition(condition: .notOnQueue(.main))
         defer { close(fd) }
 
         var framer = IPCFramer()
         var chunk = [UInt8](repeating: 0, count: 4096)
         var frame: Data?
+        var hasReceivedAnyByte = false
+        let frameDeadline = Date().addingTimeInterval(timeouts.fullFrameSeconds)
 
         readLoop: while frame == nil {
+            // Per-iteration poll deadline: tighter window before we've seen any
+            // bytes (silent-client protection); fall back to whatever's left of
+            // the full-frame budget after the first byte arrives.
+            let now = Date()
+            if now >= frameDeadline {
+                Log.ipc.notice("ipc connection timed out before full frame received")
+                return
+            }
+            let firstByteRemaining = timeouts.firstByteSeconds // measured per-poll, intentional
+            let frameRemaining = frameDeadline.timeIntervalSince(now)
+            let pollTimeoutSec = hasReceivedAnyByte
+                ? frameRemaining
+                : min(firstByteRemaining, frameRemaining)
+            switch Self.pollFor(fd: fd, events: Int16(POLLIN), seconds: pollTimeoutSec) {
+            case .ready: break
+            case .timeout:
+                Log.ipc.notice("ipc connection timed out waiting for \(hasReceivedAnyByte ? "frame completion" : "first byte", privacy: .public)")
+                return
+            case .closed:
+                return
+            case .error:
+                Log.ipc.error("ipc poll(read) failed: \(String(cString: strerror(errno)), privacy: .public)")
+                return
+            }
+
             let n = chunk.withUnsafeMutableBufferPointer { buf -> Int in
                 Darwin.read(fd, buf.baseAddress, buf.count)
             }
             if n < 0 {
-                if errno == EINTR { continue }
-                Log.ipc.error("read failed: \(String(cString: strerror(errno)), privacy: .public)")
+                let e = errno
+                if e == EINTR || e == EAGAIN || e == EWOULDBLOCK { continue }
+                Log.ipc.error("read failed: \(String(cString: strerror(e)), privacy: .public)")
                 return
             }
             if n == 0 { return } // peer closed before sending a full frame
+            hasReceivedAnyByte = true
             do {
                 try framer.append(Data(bytes: chunk, count: n))
             } catch {
-                writeFailure(fd: fd, id: "", code: "frame_too_large", message: "request exceeded 1 MiB")
+                writeFailure(fd: fd, id: "", code: "frame_too_large", message: "request exceeded 1 MiB", timeouts: timeouts)
                 return
             }
             frame = framer.nextFrame()
@@ -230,37 +279,67 @@ public final class IPCServer {
             response = IPCResponse.failure(id: "", code: "bad_request", message: "malformed JSON: \(error)")
         }
 
-        writeResponse(fd: fd, response: response)
+        writeResponse(fd: fd, response: response, timeouts: timeouts)
     }
 
-    private func writeResponse(fd: Int32, response: IPCResponse) {
+    private enum PollOutcome { case ready, timeout, closed, error }
+
+    /// poll(2) wrapper. Returns once `fd` is readable/writable, the timeout
+    /// expires, the peer has closed (POLLHUP), or poll() itself errors.
+    private static func pollFor(fd: Int32, events: Int16, seconds: Double) -> PollOutcome {
+        if seconds <= 0 { return .timeout }
+        var pfd = pollfd(fd: fd, events: events, revents: 0)
+        let ms = Int32(min(Double(Int32.max), seconds * 1000.0))
+        let rc = withUnsafeMutablePointer(to: &pfd) { ptr in
+            Darwin.poll(ptr, 1, ms)
+        }
+        if rc < 0 { return errno == EINTR ? .ready : .error }
+        if rc == 0 { return .timeout }
+        let r = pfd.revents
+        if r & Int16(POLLNVAL | POLLERR) != 0 { return .error }
+        if r & Int16(POLLHUP) != 0 && r & events == 0 { return .closed }
+        return .ready
+    }
+
+    private func writeResponse(fd: Int32, response: IPCResponse, timeouts: Timeouts) {
         do {
             var data = try IPCCoding.makeEncoder().encode(response)
             data.append(0x0A)
-            writeAll(fd: fd, data: data)
+            writeAll(fd: fd, data: data, timeouts: timeouts)
         } catch {
-            writeFailure(fd: fd, id: response.id, code: "encode_failed", message: "\(error)")
+            writeFailure(fd: fd, id: response.id, code: "encode_failed", message: "\(error)", timeouts: timeouts)
         }
     }
 
-    private func writeFailure(fd: Int32, id: String, code: String, message: String) {
+    private func writeFailure(fd: Int32, id: String, code: String, message: String, timeouts: Timeouts) {
         let resp = IPCResponse.failure(id: id, code: code, message: message)
         if let raw = try? IPCCoding.makeEncoder().encode(resp) {
             var data = raw
             data.append(0x0A)
-            writeAll(fd: fd, data: data)
+            writeAll(fd: fd, data: data, timeouts: timeouts)
         }
     }
 
-    private func writeAll(fd: Int32, data: Data) {
+    private func writeAll(fd: Int32, data: Data, timeouts: Timeouts) {
         var remaining = data
         while !remaining.isEmpty {
             let n = remaining.withUnsafeBytes { buf -> Int in
                 Darwin.write(fd, buf.baseAddress, buf.count)
             }
             if n < 0 {
-                if errno == EINTR { continue }
-                Log.ipc.error("write failed: \(String(cString: strerror(errno)), privacy: .public)")
+                let e = errno
+                if e == EINTR { continue }
+                if e == EAGAIN || e == EWOULDBLOCK {
+                    switch Self.pollFor(fd: fd, events: Int16(POLLOUT), seconds: timeouts.writeSeconds) {
+                    case .ready: continue
+                    case .timeout:
+                        Log.ipc.notice("ipc write timed out — closing slow-reading client")
+                        return
+                    case .closed, .error:
+                        return
+                    }
+                }
+                Log.ipc.error("write failed: \(String(cString: strerror(e)), privacy: .public)")
                 return
             }
             if n == 0 { return }

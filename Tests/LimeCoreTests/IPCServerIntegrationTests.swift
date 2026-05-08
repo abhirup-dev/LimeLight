@@ -89,6 +89,70 @@ final class IPCServerIntegrationTests: XCTestCase {
         }
     }
 
+    // focusfx-lol: A client that connects and sends nothing must not pin a
+    // worker thread forever. With short timeouts the server should hang up on
+    // the silent client AND keep serving valid clients in the meantime.
+    func testSilentClientIsClosedAndDoesNotBlockOthers() throws {
+        let path = makeTempSocketPath()
+        defer { unlink(path) }
+
+        let router = IPCRouter()
+        router.register("status") { req in
+            IPCResponse.success(id: req.id, result: AnyCodable("ok"))
+        }
+        let timeouts = IPCServer.Timeouts(firstByteSeconds: 0.2, fullFrameSeconds: 0.5, writeSeconds: 0.2)
+        let server = IPCServer(socketPath: path, router: router, timeouts: timeouts)
+        try server.start()
+        defer { server.stop() }
+
+        // Open 8 silent connections — connect, never write.
+        var idleFDs: [Int32] = []
+        for _ in 0..<8 {
+            let cfd = try connectSilently(to: path)
+            idleFDs.append(cfd)
+        }
+        defer { for fd in idleFDs { close(fd) } }
+
+        // While idle clients are still pinned (pre-fix would block here),
+        // a real client must get a sub-100ms response.
+        let client = IPCClient(socketPath: path)
+        let started = Date()
+        let resp = try client.call(IPCRequest(id: "live", command: "status"))
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertTrue(resp.ok)
+        XCTAssertLessThan(elapsed, 0.5, "valid client blocked behind silent ones (\(elapsed)s)")
+
+        // After the firstByteSeconds budget, every silent fd must have been
+        // closed by the server. Read returns 0 bytes on a closed peer.
+        Thread.sleep(forTimeInterval: 0.4)
+        for fd in idleFDs {
+            var b: UInt8 = 0
+            let n = Darwin.read(fd, &b, 1)
+            XCTAssertEqual(n, 0, "server did not hang up on silent client (read returned \(n))")
+        }
+    }
+
+    /// Open a Unix-domain client socket but write nothing.
+    private func connectSilently(to path: String) throws -> Int32 {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        addr.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        let bytes = Array(path.utf8)
+        withUnsafeMutableBytes(of: &addr.sun_path) { dst in
+            let p = dst.baseAddress!.assumingMemoryBound(to: CChar.self)
+            for (i, b) in bytes.enumerated() { p[i] = CChar(bitPattern: b) }
+            p[bytes.count] = 0
+        }
+        let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let rc = withUnsafePointer(to: &addr) { ptr -> Int32 in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, len) }
+        }
+        XCTAssertEqual(rc, 0, "connect: \(String(cString: strerror(errno)))")
+        return fd
+    }
+
     func testServerHandlesStaleSocketFromPreviousCrash() throws {
         let path = makeTempSocketPath()
         defer { unlink(path) }
