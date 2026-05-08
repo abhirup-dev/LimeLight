@@ -70,7 +70,16 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         Log.core.notice("LimeLight daemon terminating")
+        // Crash-safe shutdown order (focusfx-30.2):
+        //   1. Stop IPC first so no new commands land mid-shutdown.
+        //   2. Tear down border overlay NSWindows synchronously on main —
+        //      otherwise a rapid relaunch race-leaks them onto the next
+        //      session's screen.
+        //   3. Stop the WindowTracker (cancels SLS streaming + AX observers).
+        // ConfigStore is value-typed and needs no teardown.
         ipcServer?.stop()
+        borderEngine?.tearDown()
+        windowTracker.stop()
     }
 
     private func registerCommands() {
@@ -160,6 +169,58 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
 
         router.register("config.path") { req in
             IPCResponse.success(id: req.id, result: AnyCodable(store.path))
+        }
+
+        // `perf`: cached, cheap diagnostics dump (focusfx-30.1). Reads only
+        // already-published state — no window rescan, no SLS round-trip,
+        // no main-thread hop. Use as a quick health probe before
+        // escalating to Instruments.
+        let bridge = windowServerBridge
+        let startedAt = startedAt
+        router.register("perf") { [weak self] req in
+            let snapshot = store.currentSnapshot
+            let mainThread = MainThreadBudgetMetrics.snapshot()
+            let renderEnabled = self?.borderEngine?.currentOverrides().global.enabled ?? snapshot.borders.enabled
+            let desiredCount = self?.borderEngine?.currentDesired().count ?? 0
+            let iso = ISO8601DateFormatter()
+            let diagnostics = PerfDiagnostics(
+                collectedAtIso: iso.string(from: Date()),
+                daemon: PerfDiagnostics.Daemon(
+                    version: Lime.version,
+                    pid: getpid(),
+                    bundleIdentifier: Bundle.main.bundleIdentifier ?? "dev.abhirup.LimeLight",
+                    uptimeSeconds: Date().timeIntervalSince(startedAt)
+                ),
+                accessibility: PerfDiagnostics.Accessibility(
+                    status: tracker.accessibility.rawValue
+                ),
+                skylight: PerfDiagnostics.SkyLight(
+                    streamingAvailable: (bridge as? StreamingSkyLightBridge)?.isStreaming ?? false,
+                    frontWindowResolutionAvailable: SkyLightSymbols.resolveFromSkyLight().canResolveFrontWindow
+                ),
+                socket: PerfDiagnostics.Socket(path: Lime.resolvedSocketPath),
+                config: PerfDiagnostics.Config(
+                    path: store.path,
+                    diagnosticsCount: snapshot.diagnostics.count,
+                    bordersEnabled: snapshot.borders.enabled,
+                    ruleCount: snapshot.rules.count
+                ),
+                render: PerfDiagnostics.Render(
+                    bordersEngineEnabled: renderEnabled,
+                    desiredBorderCount: desiredCount
+                ),
+                tracker: PerfDiagnostics.Tracker(
+                    trackedWindowCount: tracker.snapshot.count,
+                    focusedWindowID: tracker.currentFocusedWindowID
+                ),
+                mainThread: PerfDiagnostics.MainThread(
+                    totalBudgetCalls: mainThread.totalCalls,
+                    slowBudgetCalls: mainThread.slowCalls,
+                    maxObservedMs: mainThread.maxElapsedMs,
+                    slowestTaskAtIso: mainThread.slowestTaskAt.map { iso.string(from: $0) }
+                )
+            )
+            return IPCResponse.success(id: req.id, result: AnyCodable(diagnostics.toIPCDictionary()))
         }
 
         // Border runtime overrides (focusfx-14.3). The shim binary forwards

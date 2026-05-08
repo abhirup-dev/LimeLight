@@ -41,6 +41,7 @@ func runHelp() -> Never {
     print("  windows [--json]           List cached windows.")
     print("  current-window [--json]    Print the focused window.")
     print("  borders <subcommand>       Runtime border controls (enable/disable/redraw-all/reset).")
+    print("  perf [--json]              Cached diagnostics dump (daemon, AX, SkyLight, render).")
     print("  --help, -h                 Show this help.")
     print("  --version, -v              Print version.")
     exit(0)
@@ -78,6 +79,8 @@ case "current-window":
     CurrentWindowCommand.run(rest)
 case "borders":
     BordersCommand.run(rest)
+case "perf":
+    PerfCommand.run(rest)
 default:
     FileHandle.standardError.write(Data("limelight: command '\(command)' not implemented yet\n".utf8))
     exit(2)
