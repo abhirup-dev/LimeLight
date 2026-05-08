@@ -154,12 +154,11 @@ final class BorderEngineLogicTests: XCTestCase {
         DisplayInfo(id: id, cgFrame: cg, cocoaVisibleFrame: cg, isFullscreen: isFullscreen)
     }
 
-    func testHybridUnfocusedMonitorEmitsNoScreenBorder() {
-        // Two displays side-by-side; focused window on display 1, idle on
-        // display 2. The unfocused-monitor screen-wide border was removed
-        // (focusfx-ogp follow-up): users found the faded edge stripe more
-        // confusing than helpful. Re-enable behind a config flag if ever
-        // wanted again.
+    func testWindowsOnUnfocusedMonitorRenderInactive() {
+        // focusfx-fa3: Two displays side-by-side; focused window on display 1,
+        // idle window on display 2. The unfocused-display window must still
+        // get a border (inactive color). Earlier behavior dropped it entirely.
+        // The screen-wide stripe is still gone (removed in focusfx-ogp).
         let d1 = display(1, cg: CGRect(x: 0, y: 0, width: 1920, height: 1080))
         let d2 = display(2, cg: CGRect(x: 1920, y: 0, width: 1920, height: 1080))
         let focused = w(1, frame: CGRect(x: 100, y: 100, width: 800, height: 600))
@@ -172,10 +171,50 @@ final class BorderEngineLogicTests: XCTestCase {
             displays: [d1, d2]
         )
         let result = BorderEngineLogic.desiredBorders(inputs)
-        XCTAssertNotNil(result[.window(1)], "focused window border on focused monitor")
-        XCTAssertNil(result[.window(2)], "windows on unfocused monitor get no per-window border")
+        XCTAssertEqual(result[.window(1)]?.isActive, true, "focused window is active")
+        XCTAssertEqual(result[.window(2)]?.isActive, false, "unfocused-display window is inactive")
         XCTAssertNil(result[.screen(1)])
         XCTAssertNil(result[.screen(2)])
+    }
+
+    func testThreeDisplaysTwoWindowsEachFocusOnEachDisplay() {
+        // focusfx-fa3 acceptance: three displays, two windows each, sweep the
+        // focus across all six. The focused window must always be the only
+        // active border; the other five must always render inactive — never
+        // missing.
+        let d1 = display(1, cg: CGRect(x: 0,    y: 0, width: 1920, height: 1080))
+        let d2 = display(2, cg: CGRect(x: 1920, y: 0, width: 1920, height: 1080))
+        let d3 = display(3, cg: CGRect(x: 3840, y: 0, width: 1920, height: 1080))
+        let windows = [
+            w(11, frame: CGRect(x:    0, y: 0, width: 960, height: 1080)),
+            w(12, frame: CGRect(x:  960, y: 0, width: 960, height: 1080)),
+            w(21, frame: CGRect(x: 1920, y: 0, width: 960, height: 1080)),
+            w(22, frame: CGRect(x: 2880, y: 0, width: 960, height: 1080)),
+            w(31, frame: CGRect(x: 3840, y: 0, width: 960, height: 1080)),
+            w(32, frame: CGRect(x: 4800, y: 0, width: 960, height: 1080)),
+        ]
+        let allIDs: Set<WindowID> = [11, 12, 21, 22, 31, 32]
+        for focusID in allIDs {
+            let inputs = BorderEngineLogic.Inputs(
+                orderedWindows: windows,
+                focusedWindowID: focusID,
+                snapshot: makeSnapshot(),
+                primaryDisplayHeight: 1080,
+                displays: [d1, d2, d3]
+            )
+            let result = BorderEngineLogic.desiredBorders(inputs)
+            for id in allIDs {
+                guard let spec = result[.window(id)] else {
+                    XCTFail("focus=\(focusID): window \(id) missing border (focusfx-fa3 regression)")
+                    continue
+                }
+                XCTAssertEqual(spec.isActive, id == focusID,
+                    "focus=\(focusID): window \(id) active=\(spec.isActive)")
+            }
+            XCTAssertNil(result[.screen(1)])
+            XCTAssertNil(result[.screen(2)])
+            XCTAssertNil(result[.screen(3)])
+        }
     }
 
     func testHybridFocusedMonitorTilesAllGetBorders() {

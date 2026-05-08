@@ -120,29 +120,31 @@ public enum BorderEngineLogic {
         }
     }
 
-    /// Hybrid per-monitor border design.
+    /// Per-window border design across all known displays.
     ///
-    /// **Focused monitor** (the display containing the focused window's
-    /// center): emit per-window borders for every visible, non-excluded
-    /// window on that monitor. Focused window gets the active color, all
-    /// other tiles on the same monitor get inactive. Preserves the
-    /// AeroSpace tile UX where every visible tile is bordered.
+    /// Every visible, non-excluded, non-occluded window on every known
+    /// display gets a border. The window matching `focusedWindowID` gets
+    /// the active color; all others get inactive. This holds across
+    /// monitors so users on multi-display setups don't lose track of
+    /// windows on the displays they aren't currently focused on
+    /// (focusfx-fa3).
     ///
-    /// **Unfocused monitors**: emit one synthetic screen-wide border at
-    /// `cocoaVisibleFrame` (excludes menu bar / dock), keyed by display ID.
-    /// Cuts visual noise on the monitors you're not driving without losing
-    /// the awareness that something's there.
+    /// **Occlusion** is computed across *all* displays in z-order. In
+    /// practice display CG rects don't overlap, so a window on display A
+    /// can't occlude one on display B — this is just a uniform pass.
     ///
-    /// **Fullscreen monitors**: skipped — drawing a border around fullscreen
-    /// content clips it visually.
+    /// **No focus** (`focusedWindowID == nil`): every visible window
+    /// renders with the inactive color. No active highlight; useful for
+    /// transient cmd-tab gaps.
     ///
-    /// **No focus** (`focusedWindowID == nil`): hide all screen borders;
-    /// fall back to per-window borders for everything visible (inactive
-    /// color). Avoids a flickering screen border during cmd-tab gaps.
+    /// **No display info** (empty `displays`): skip the membership filter
+    /// entirely. Tests that don't care about monitor topology hit this
+    /// branch.
     ///
-    /// **No display info** (empty `displays`): skip the screen-border path
-    /// entirely; behave like single-display per-window mode. Tests that
-    /// don't care about monitor topology hit this branch.
+    /// Screen-wide borders (`BorderID.screen`) are NOT emitted. The
+    /// hybrid synthetic-stripe design was removed in focusfx-ogp because
+    /// users found the faded screen-edge stripe more confusing than
+    /// helpful.
     public static func desiredBorders(_ inputs: Inputs) -> [BorderID: BorderSpec] {
         let effectiveGlobal = applyOverride(inputs.snapshot.borders, inputs.overrides.global)
         guard effectiveGlobal.enabled else { return [:] }
@@ -153,17 +155,6 @@ public enum BorderEngineLogic {
         // (it's accepted *before* z-order iteration) so a same-pid
         // sibling can't steal its border slot — focusfx-ogp.
         let focusedWindowID = inputs.focusedWindowID
-
-        // Determine the focused display (if any) by locating the focused
-        // window's center inside one of the display CG rects.
-        let focusedDisplayID: CGDirectDisplayID? = {
-            guard !inputs.displays.isEmpty,
-                  let fid = focusedWindowID,
-                  let fw = inputs.orderedWindows.first(where: { $0.windowID == fid })
-            else { return nil }
-            let center = CGPoint(x: fw.frame.midX, y: fw.frame.midY)
-            return inputs.displays.first { $0.cgFrame.contains(center) }?.id
-        }()
 
         var result: [BorderID: BorderSpec] = [:]
         result.reserveCapacity(inputs.orderedWindows.count + inputs.displays.count)
@@ -195,15 +186,17 @@ public enum BorderEngineLogic {
             // than risk losing borders on a transient AX hiccup.
             if w.isAXOwned == false { continue }
 
-            // Display membership: in hybrid mode, only emit per-window borders
-            // for windows on the focused display. With no focus, fall back to
-            // bordering every visible window on any known display.
-            let windowDisplay = inputs.displays.first(where: {
-                $0.cgFrame.contains(CGPoint(x: w.frame.midX, y: w.frame.midY))
-            })
+            // Display membership: when display info is supplied, require the
+            // window's center to land on *some* known display — windows
+            // floating off-screen (mid-animation, between Spaces) shouldn't
+            // get a border. Windows on unfocused displays still emit borders
+            // (focusfx-fa3): the per-display filter that previously dropped
+            // them was a hold-over from the screen-wide unfocused-stripe
+            // design, which was removed in focusfx-ogp.
             if !inputs.displays.isEmpty {
-                guard let wd = windowDisplay else { continue }
-                if let focused = focusedDisplayID, wd.id != focused { continue }
+                guard inputs.displays.contains(where: {
+                    $0.cgFrame.contains(CGPoint(x: w.frame.midX, y: w.frame.midY))
+                }) else { continue }
             }
 
             let attrs = w.attributes(aerospaceWorkspace: inputs.aerospaceWorkspace)
@@ -236,11 +229,6 @@ public enum BorderEngineLogic {
             )
             acceptedFrames.append(w.frame)
         }
-
-        // Screen-wide unfocused-monitor border: temporarily disabled
-        // (focusfx-ogp follow-up). The faded screen-edge stripe was
-        // unwanted and confused users into thinking it was a stale
-        // window border. Re-enable behind a config flag if ever wanted.
 
         return result
     }
