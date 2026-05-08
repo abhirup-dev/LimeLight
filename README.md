@@ -1,73 +1,88 @@
 # LimeLight
 
-> macOS 14+ menu-bar daemon that draws focus borders and runs transient
-> Metal effects. JankyBorders-compatible CLI, AeroSpace-friendly,
+> Focus borders for macOS 14+. JankyBorders-compatible, AeroSpace-friendly,
 > Hammerspoon-scriptable.
 
-LimeLight runs as a single short-lived daemon (`LimeLight.app`) plus three
-small binaries (`limelight`, `limelightd`, `borders`) that talk to it over
-a per-user Unix socket. The shipping focus surface today is the border
-engine; effects and popups are scaffolded behind feature flags.
+LimeLight draws a coloured border around your focused window so you always
+know where your typing is going. Per-app rules (gradients, glows,
+different widths) live in a small JSONC config. It runs as a single
+background daemon talking to a `limelight` CLI over a per-user Unix
+socket.
 
-## Status
+If you're coming from [JankyBorders](https://github.com/FelixKratz/JankyBorders),
+LimeLight understands the same `active_color=… width=…` arguments — most
+setups can switch with a one-line change. See **Migrating from
+JankyBorders** below.
 
-- Borders engine: shipping. SLS-driven focus resolution
-  (JankyBorders-equivalent) with AX fallback. Multi-monitor, AeroSpace
-  tile UX, Arc multi-surface, fullscreen Spaces.
-- Effects / popup: scaffolded — CLI verbs land with `focusfx-18` and
-  `focusfx-22`.
-- Hammerspoon helper, AeroSpace snippets: `examples/`.
-- Sparkle updater, plugin runtime: explicitly out of scope for v0.
+## Requirements
+
+- macOS 14 (Sonoma) or newer.
+- Accessibility permission for the daemon (granted via System Settings —
+  the daemon prompts on first launch).
+- A Swift 5.10+ toolchain to build (Xcode 15+ ships one; or `xcode-select --install`).
 
 ## Install
+
+There's no Homebrew tap yet. Build and install three small binaries:
 
 ```bash
 git clone https://github.com/<your-fork>/LimeLight.git
 cd LimeLight
 swift build -c release
 
-# 1. Install the daemon executable as a .app so it can hold a status item.
-#    Replace LIME_PREFIX with where you want the binaries to live.
-LIME_PREFIX="$HOME/.local"
-install -d "$LIME_PREFIX/bin"
-install .build/release/limelight        "$LIME_PREFIX/bin/"
-install .build/release/borders          "$LIME_PREFIX/bin/"
-install .build/release/limelightd       "$LIME_PREFIX/bin/"
-
-# 2. Start the daemon (or relaunch after upgrade).
-limelight daemon open
-
-# 3. Grant Accessibility permission when prompted (System Settings →
-#    Privacy & Security → Accessibility). Required: AX is the
-#    fallback path when SLS private symbols are unavailable, and is
-#    used to enrich window titles even on the SLS path.
+# Install the binaries somewhere on PATH. ~/.local/bin is a good default;
+# add it to your shell init if it isn't already:
+#   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+install -d ~/.local/bin
+install .build/release/limelight   ~/.local/bin/
+install .build/release/limelightd  ~/.local/bin/
+install .build/release/borders     ~/.local/bin/limelight-borders
 ```
 
-`swift build -c release` produces optimized binaries in `.build/release/`.
-Debug builds (`swift build`) are fine for local hacking but slower.
+> **Why rename `borders` → `limelight-borders`?** If you have JankyBorders
+> installed via Homebrew, both binaries answer to `borders` and `$PATH`
+> order decides which one wins. Renaming the LimeLight shim avoids the
+> ambiguity. If you don't have JankyBorders installed, you can skip the
+> rename and ship it as plain `borders`.
+
+Start the daemon:
+
+```bash
+limelightd &
+```
+
+The first launch opens the macOS Accessibility prompt — grant access in
+System Settings → Privacy & Security → Accessibility, then re-run
+`limelightd`. After that you should see borders around your focused
+windows. Verify:
+
+```bash
+limelight perf
+```
+
+You're looking for:
+- `accessibility: granted`
+- `skylight: streaming=yes frontWindowResolution=yes` (private SLS APIs
+  resolved — you get JankyBorders-equivalent focus tracking)
+- `render: bordersOn=1 desired=N` (some N > 0)
 
 ## Configure
 
-Default config path (override with `$LIME_CONFIG`):
+Default config path:
 
 ```
-$XDG_CONFIG_HOME/limelight/config.jsonc
-# or, on macOS without XDG set:
-~/Library/Application Support/LimeLight/config.jsonc
+~/.config/limelight/config.jsonc
 ```
 
-JSONC (JSON with comments and trailing commas) is supported. The full
-schema is the `RawConfig` struct in `Sources/LimeCore/Config/ConfigSchema.swift`.
-Minimal config:
+Override with `$LIME_CONFIG` if you want it elsewhere. JSONC means JSON
+plus comments and trailing commas. Minimal example:
 
 ```jsonc
 {
   "borders": {
     "enabled": true,
     "style": "round",        // round | square | uniform
-    "order": "below",        // above | below
     "width": 5.0,
-    "hidpi": false,
     "active":   { "color": "0xffe1e3e4" },
     "inactive": { "color": "0xff494d64" }
   },
@@ -81,6 +96,13 @@ Minimal config:
         "inactive": { "color": "0x88494d64" },
         "width": 6.0
       }
+    },
+    {
+      "name": "Slack gradient",
+      "match": { "appName": "Slack" },
+      "borders": {
+        "active": { "color": "gradient(top_left=0xff00ddff, bottom_right=0xffff00aa)" }
+      }
     }
   ],
 
@@ -91,166 +113,190 @@ Minimal config:
 }
 ```
 
-Validate without applying (won't swap the live snapshot):
+Colour formats accepted in `"color"`:
+
+| Form | Looks like |
+|---|---|
+| `0xAARRGGBB` | flat solid colour with alpha |
+| `glow(0xAARRGGBB)` | solid stroke + outer halo |
+| `gradient(top_left=…, bottom_right=…)` | two-stop linear gradient |
+| `gradient(top_right=…, bottom_left=…)` | other diagonal |
+
+Match clauses (any combination is AND-ed):
+
+- `appName` — exact app name (e.g. `"Slack"`).
+- `bundleIdentifier` — e.g. `"com.tinyspeck.slackmacgap"`.
+- `windowTitle` — exact title string.
+- `windowTitleRegex` — regex against the title.
+- `windowID` — pin to a specific CGWindowID (rare).
+- `aerospaceWorkspace` — workspace name (requires the AeroSpace hook below).
+
+After editing the file:
 
 ```bash
-limelight config validate
+limelight reload                # apply
+limelight config validate       # check syntax without applying
 ```
-
-Apply changes after editing:
-
-```bash
-limelight reload
-```
-
-## CLI
-
-```
-limelight daemon open                 Launch / front the daemon.
-limelight daemon quit                 Ask the daemon to terminate.
-limelight status [--json]             Cached health snapshot.
-limelight perf   [--json]             Diagnostics dump (AX/SLS/render/perf).
-limelight reload                      Re-read config from disk.
-limelight config validate             Validate without publishing.
-limelight config path                 Print active config path.
-limelight windows [--json]            Cached window list.
-limelight current-window [--json]     Focused window.
-limelight borders enable|disable|redraw-all|reset
-limelight borders desired             Diagnostic: dump the engine's desired set.
-```
-
-`borders` (the JankyBorders-compatible shim) accepts upstream-style args:
-
-```bash
-borders active_color=0xffe1e3e4 inactive_color=0xff494d64 width=5.0 style=round order=below
-```
-
-`order`, `hidpi`, `ax_focus`, `blacklist`, `whitelist`, `apply-to`,
-`background_color` all map onto the same `borders.style` IPC the daemon
-exposes. `ax_focus=on` is the JB-equivalent escape hatch when SLS-based
-focus misbehaves; it forces AX-only resolution.
-
-## Hammerspoon
-
-`examples/hammerspoon/limelight.lua` is a small module wrapping the
-`limelight` CLI. Drop it into `~/.hammerspoon/` next to `init.lua`:
-
-```lua
-local L = require("limelight")
-L.daemonOpen()
-hs.hotkey.bind({"ctrl","alt"}, "B", function() L.bordersToggle() end)
-hs.hotkey.bind({"ctrl","alt"}, "R", function() L.reload() end)
-```
-
-See `examples/hammerspoon/init-snippet.lua` for the full example.
-Hotkeys are safe under repetition because each helper is a single
-short-lived shell-out.
 
 ## AeroSpace
 
-`examples/aerospace/aerospace.toml` ships drop-in snippets:
+Edit `~/.config/aerospace/aerospace.toml`. If you currently have a
+`borders …` startup command, replace it with `limelightd`:
 
 ```toml
-after-startup-command = ['exec-and-forget limelight daemon open']
-
-# Per-workspace effect (forward-compat — wires fully when focusfx-18.2 lands):
-exec-on-workspace-change = ['/bin/bash', '-c',
-    'exec-and-forget limelight trigger --aerospace-workspace=$AEROSPACE_FOCUSED_WORKSPACE']
+# after-startup-command = [
+#     'exec-and-forget borders style=round active_color=0xffff0000 ...'
+# ]
+after-startup-command = [
+    'exec-and-forget /Users/YOU/.local/bin/limelightd'
+]
 ```
 
-Rules can match by AeroSpace workspace once the hook supplies it:
+Use the absolute path so AeroSpace doesn't depend on your shell's PATH.
+Border style and colours come from `~/.config/limelight/config.jsonc`,
+not from this line — keep all visual tuning in the JSONC config.
+
+Optional — fire a focus effect when you change workspaces:
+
+```toml
+exec-on-workspace-change = ['/bin/bash', '-c',
+    'exec-and-forget /Users/YOU/.local/bin/limelight trigger --aerospace-workspace=$AEROSPACE_FOCUSED_WORKSPACE']
+```
+
+You can then match rules against the workspace:
 
 ```jsonc
 "rules": [
   {
-    "name": "focus mode on workspace 1",
+    "name": "Workspace 1 cyan",
     "match": { "aerospaceWorkspace": "1" },
     "borders": { "active": { "color": "glow(0xff00d1ff)" } }
   }
 ]
 ```
 
-## Replacing JankyBorders
+Reload AeroSpace (`aerospace reload-config` or quit/relaunch) to pick
+up the changes.
 
-The bundled `borders` shim is wire-compatible with the upstream JB CLI.
-Migration is a path swap — leave your existing
-`after-startup-command = ['exec-and-forget borders ...']` line in place
-and ensure LimeLight's `bin/` is ahead of any prior JB install on
-`$PATH` (verify with `which borders`). Don't run both at the same time:
-they bind the same overlay layer level and you'll get duplicated
-strokes.
+## Hammerspoon
 
-See `examples/README.md` for the full replacement guide and the
-verification matrix.
+Drop `examples/hammerspoon/limelight.lua` next to your `~/.hammerspoon/init.lua`.
+In `init.lua`:
 
-## Known limitations
+```lua
+local L = require("limelight")
+hs.hotkey.bind({"ctrl", "alt"}, "B", function() L.bordersToggle() end)
+hs.hotkey.bind({"ctrl", "alt"}, "R", function() L.reload() end)
+hs.hotkey.bind({"ctrl", "alt"}, "I", function()
+    local w = L.currentWindow()
+    if w then hs.alert.show(w.appName .. " — " .. (w.title or "")) end
+end)
+```
 
-- **Private SLS symbols** are dlopen'd from
-  `/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight`. If a
-  future macOS removes them, the daemon degrades to AX-only focus —
-  visible as `sls_resolver_off` in `limelight perf`. v0 has no Sparkle
-  auto-update; you'd need to install a build that's been ported.
-- **No plugin runtime in v1.** Effects/popups are static.
-- **No background fill window** behind the active app yet — that needs
-  `SLSReorderWindow` (tracked in `focusfx-007`).
-- **`canJoinAllSpaces` was the v0 default; per-Space attachment now uses
-  `.moveToActiveSpace`** — borders live on the user's current Space.
-  Engine recomputes on SLS spaceChange events. Truly per-Space SLS
-  attachment (using `SLSMoveWindowsToManagedSpace`) is a follow-up.
-- **Screenshots don't capture borders.** Overlay NSWindows use
-  `sharingType = .none` so they're invisible to `CGWindowListCopyWindowInfo`
-  — the same enumeration we use to find target windows. This avoids
-  bordering our own borders.
+Each helper is a single short-lived shell-out, so it's safe to bind to
+hotkeys you mash repeatedly.
+
+## CLI reference
+
+```
+limelight status [--json]             Cached health snapshot.
+limelight perf   [--json]             Diagnostics dump (AX, SkyLight, render, perf).
+limelight reload                      Re-read config.jsonc.
+limelight config validate             Validate without applying.
+limelight config path                 Print active config path.
+limelight windows [--json]            Cached window list.
+limelight current-window [--json]     Focused window.
+limelight borders enable              Borders on (runtime override).
+limelight borders disable             Borders off.
+limelight borders redraw-all          Force-recreate every overlay.
+limelight borders reset               Drop runtime overrides.
+limelight borders desired             Diagnostic: dump engine state.
+limelight trigger [--effect=cometRing]  Transient effect on focused window.
+limelight popup --title=T --message=M   Transient banner.
+limelight daemon quit                 Ask daemon to terminate.
+```
+
+The `limelight-borders` shim accepts upstream JankyBorders args and
+forwards them to the daemon:
+
+```bash
+limelight-borders active_color=0xffe1e3e4 inactive_color=0xff494d64 width=5.0 style=round
+```
+
+`order=above|below`, `hidpi=on|off`, `ax_focus=on|off` (escape hatch when
+SLS focus misbehaves), `blacklist=App,App`, `whitelist=App,App` are all
+honoured at runtime.
+
+## Migrating from JankyBorders
+
+LimeLight's `limelight-borders` shim speaks the same wire format as
+`brew install borders`. To switch:
+
+1. Make sure the LimeLight daemon is running (`limelightd &`).
+2. Comment out your existing `borders …` startup command in
+   `~/.config/aerospace/aerospace.toml` (or wherever you launch it from).
+3. Replace it with `'exec-and-forget /Users/YOU/.local/bin/limelightd'`.
+4. (Optional) `brew uninstall borders` once you're happy with LimeLight.
+
+**Don't run both at the same time** — they bind the same overlay layer
+level and you'll get duplicated strokes.
 
 ## Diagnostics
 
-`limelight perf` is the first stop:
+`limelight perf` is the first stop when something looks off:
 
 ```
-LimeLight 0.1.0  pid=8412  uptime=12m
-  socket:        /tmp/limelight.sock
+LimeLight 0.0.1  pid=36085  uptime=12m9s
+  socket:        /Users/me/Library/Application Support/LimeLight/limelight.sock
   accessibility: granted
   skylight:      streaming=yes frontWindowResolution=yes
-  config:        /Users/me/Library/Application Support/LimeLight/config.jsonc
-                 rules=4 diagnostics=0 bordersEnabled=true
-  tracker:       trackedWindows=27 focused=33251
-  render:        bordersOn=true desired=3
-  mainThread:    calls=1842 slow=0 maxMs=4.32
+  config:        /Users/me/.config/limelight/config.jsonc
+                 rules=2 diagnostics=0 bordersEnabled=1
+  tracker:       trackedWindows=21 focused=33251
+  render:        bordersOn=1 desired=2
+  mainThread:    calls=37 slow=3 maxMs=66.22
 ```
 
 `limelight perf --json` returns the same structure for scripting. The
-`warnings` array surfaces stable diagnostic codes:
+JSON form also includes a `warnings` array with stable codes:
 
-| Code | Meaning |
-|---|---|
-| `ax_denied` | Accessibility permission missing — focus falls back to title-only AX guesses. |
-| `ax_undetermined` | TCC prompt unanswered. |
-| `sls_streaming_off` | SLS event-stream symbols unavailable; window updates rely on AX/NSWorkspace. |
-| `sls_resolver_off` | SLS front-window query unavailable; focus is AX-only. |
-| `config_invalid` | Last parse produced diagnostics — see `limelight config validate`. |
-| `borders_disabled` | Engine globally off (config or runtime override). |
+| Code | Meaning | Fix |
+|---|---|---|
+| `ax_denied` | Accessibility permission missing | Grant in System Settings → Privacy & Security → Accessibility, then restart `limelightd` |
+| `ax_undetermined` | TCC prompt unanswered | Same as above |
+| `sls_streaming_off` | SLS event-stream symbols unavailable | macOS may have moved the private symbols — file an issue |
+| `sls_resolver_off` | SLS front-window query unavailable | Same — focus falls back to AX-only |
+| `config_invalid` | Config has parse errors | Run `limelight config validate` to see them |
+| `borders_disabled` | Engine globally off | `limelight borders enable`, or set `borders.enabled: true` in config |
+
+## Limitations to know about
+
+- **Screenshots don't capture borders.** Overlay windows mark themselves
+  as `sharingType = .none` so they're invisible to the same window
+  enumeration we use to find target windows — otherwise we'd border our
+  own borders. There's no opt-out.
+- **Borders live on the active Space.** When you switch Spaces the
+  border re-emerges on the next focused window. They don't ghost onto
+  every Space.
+- **Effects (`limelight trigger`):** only `cometRing` is fully
+  implemented today. `neon`, `shockwave`, and `line` parse but return
+  `effect_not_implemented` until their renderers land.
+- **Idle-return popups** are not yet wired (popup CLI works, the idle
+  detector is a follow-up).
+- **Background fill** behind the active window (the JankyBorders
+  `background_color` feature) is parsed but inert — needs a private API
+  we haven't wired yet.
+- **No auto-update.** No Sparkle, no plugin runtime in v1. Pull and
+  rebuild for new versions.
 
 ## Uninstall
 
 ```bash
-limelight daemon quit                # ask the daemon to exit cleanly
-rm "$LIME_PREFIX/bin/limelight" "$LIME_PREFIX/bin/limelightd" "$LIME_PREFIX/bin/borders"
-rm -rf "$HOME/Library/Application Support/LimeLight"
-rm -f /tmp/limelight.sock            # safe — daemon already stopped
+limelight daemon quit
+rm ~/.local/bin/limelight ~/.local/bin/limelightd ~/.local/bin/limelight-borders
+rm -rf ~/.config/limelight
+rm -f "$HOME/Library/Application Support/LimeLight/limelight.sock"
 ```
 
-To revoke Accessibility permission: System Settings → Privacy & Security
-→ Accessibility → remove `LimeLight`.
-
-## Development
-
-```bash
-swift test                           # full suite (fast — runs in <2s)
-swift build -c release
-```
-
-Issue tracking is via [beads](https://github.com/jeffrey-x/beads). Run
-`bd ready` for the current work queue.
-
-For agent-authored changes, see `AGENTS.md` for the session-completion
-protocol.
+Then revoke Accessibility: System Settings → Privacy & Security →
+Accessibility → remove `limelightd`.
