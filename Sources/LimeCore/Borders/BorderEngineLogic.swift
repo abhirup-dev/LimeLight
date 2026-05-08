@@ -19,6 +19,34 @@ public struct BorderSpec: Sendable, Equatable {
     public let style: BordersConfig.Style
     public let color: ColorSpec
     public let isActive: Bool
+    /// JankyBorders `order=above|below`. `above` puts the overlay above the
+    /// status bar (the original behavior); `below` keeps it above normal
+    /// windows but below the menu bar so OS chrome can still cover it.
+    public let order: BordersConfig.Order
+    /// JankyBorders `hidpi=on|off`. When true, the overlay's content layer
+    /// is rendered at native screen scale; when false, at 1x for perf at
+    /// the cost of softer edges on retina displays.
+    public let hidpi: Bool
+
+    public init(
+        id: BorderID,
+        frame: CGRect,
+        width: Double,
+        style: BordersConfig.Style,
+        color: ColorSpec,
+        isActive: Bool,
+        order: BordersConfig.Order = .above,
+        hidpi: Bool = true
+    ) {
+        self.id = id
+        self.frame = frame
+        self.width = width
+        self.style = style
+        self.color = color
+        self.isActive = isActive
+        self.order = order
+        self.hidpi = hidpi
+    }
 }
 
 /// One physical display's geometry, passed into the engine on every recompute.
@@ -225,7 +253,9 @@ public enum BorderEngineLogic {
                 width: effective.width,
                 style: effective.style,
                 color: isActive ? effective.active : effective.inactive,
-                isActive: isActive
+                isActive: isActive,
+                order: effective.order,
+                hidpi: effective.hidpi
             )
             acceptedFrames.append(w.frame)
         }

@@ -82,6 +82,31 @@ final class WindowTrackerTests: XCTestCase {
         XCTAssertEqual(snap.first?.bundleIdentifier, "dev.warp.Warp")
     }
 
+    // focusfx-sf2: setUseAXFocusOnly is the JankyBorders `ax_focus=on`
+    // escape hatch. Toggling it must (a) be idempotent, (b) keep the AX
+    // resolution path working — this proves the SLS-bypass branch in
+    // recomputeFocus actually runs the AX fallback.
+    func testAXFocusOnlyTogglePreservesAXResolution() {
+        let server = StubServerBridge(initial: [
+            WindowState(windowID: 7, ownerPID: 100, appName: "Warp", title: "alpha"),
+        ])
+        let ax = StubAXBridge(focusedPID: 100, focusedTitle: "alpha", status: .granted)
+        // Pass slsActiveWindow=nil so we know the SLS branch is unreachable
+        // and any focus we observe is from the AX fallback regardless of
+        // useAXFocusOnly's value.
+        let tracker = WindowTracker(server: server, ax: ax, axObservers: NoopAXWindowObserverManager(), slsActiveWindow: nil)
+        tracker.start()
+        _ = waitForSnapshot(tracker, expectedCount: 1)
+        XCTAssertEqual(waitForFocus(tracker, expected: 7), 7)
+
+        tracker.setUseAXFocusOnly(true)
+        XCTAssertEqual(waitForFocus(tracker, expected: 7), 7, "ax_focus=on must not break AX resolution")
+        tracker.setUseAXFocusOnly(true) // idempotent
+        XCTAssertEqual(tracker.currentFocusedWindowID, 7)
+        tracker.setUseAXFocusOnly(false)
+        XCTAssertEqual(waitForFocus(tracker, expected: 7), 7, "ax_focus=off must not break AX resolution")
+    }
+
     // MARK: - helpers
 
     private func waitForSnapshot(_ tracker: WindowTracker, expectedCount: Int, timeout: TimeInterval = 2) -> [WindowState] {

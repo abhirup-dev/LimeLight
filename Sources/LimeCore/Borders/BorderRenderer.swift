@@ -113,15 +113,18 @@ private final class BorderWindow {
         // sharingType=.none hides this window from CGWindowListCopyWindowInfo,
         // so the next enumeration tick won't re-border our own borders.
         w.sharingType = .none
-        w.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
-        // .canJoinAllSpaces is wrong for true per-Space attachment, but fine
-        // for v0 — borders show on all Spaces. Per-Space membership is part
-        // of focusfx-b13 (SLS streaming) where Space IDs become available.
-        w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        w.level = Self.windowLevel(for: spec)
+        // Per-Space attachment: `.moveToActiveSpace` keeps the border on
+        // the user's current Space rather than ghosting onto every Space
+        // (`.canJoinAllSpaces`, the v0 default). The engine recomputes on
+        // SLS spaceChange events anyway, so a fresh border is emitted for
+        // the new Space's focused window almost immediately (focusfx-sf2).
+        w.collectionBehavior = [.moveToActiveSpace, .stationary, .ignoresCycle, .fullScreenAuxiliary]
 
         let content = NSView(frame: NSRect(origin: .zero, size: outerFrame.size))
         content.wantsLayer = true
         content.layer?.masksToBounds = false
+        Self.applyHidpi(spec, to: content)
         w.contentView = content
 
         self.window = w
@@ -147,6 +150,13 @@ private final class BorderWindow {
         let modeChanged = colorMode(prev.color) != colorMode(spec.color)
         let frameChanged = spec.frame != prev.frame
         let glowChanged = (prev.color.isGlow || spec.color.isGlow) && prev.color != spec.color
+
+        if prev.order != spec.order {
+            window.level = Self.windowLevel(for: spec)
+        }
+        if prev.hidpi != spec.hidpi, let view = window.contentView {
+            Self.applyHidpi(spec, to: view)
+        }
 
         if modeChanged || (glowChanged && frameChanged == false) {
             // Outer-frame size depends on whether glow halo padding is needed,
@@ -276,6 +286,34 @@ private final class BorderWindow {
     private static func outerFrame(for spec: BorderSpec) -> CGRect {
         let halo = glowHaloRadius(for: spec)
         return spec.frame.insetBy(dx: -halo, dy: -halo)
+    }
+
+    /// Map JankyBorders `order=above|below` onto an NSWindow level.
+    /// `above`: status bar + 1, the original v0 placement (border floats
+    /// over OS chrome too — important for fullscreen Spaces).
+    /// `below`: status bar - 1, so the menu bar still covers the overlay.
+    /// Both sit above all normal app windows so the stroke stays visible.
+    private static func windowLevel(for spec: BorderSpec) -> NSWindow.Level {
+        let base = NSWindow.Level.statusBar.rawValue
+        switch spec.order {
+        case .above: return NSWindow.Level(rawValue: base + 1)
+        case .below: return NSWindow.Level(rawValue: base - 1)
+        }
+    }
+
+    /// `hidpi=on` renders the overlay's content layer at the screen's
+    /// native backing-scale (sharp on retina). `hidpi=off` pins it to 1x:
+    /// strokes look softer but the GPU draws fewer pixels — JankyBorders
+    /// exposes this knob for users on battery-constrained machines.
+    private static func applyHidpi(_ spec: BorderSpec, to view: NSView) {
+        guard let layer = view.layer else { return }
+        let backing: CGFloat = spec.hidpi
+            ? (view.window?.screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0)
+            : 1.0
+        layer.contentsScale = backing
+        for sub in layer.sublayers ?? [] {
+            sub.contentsScale = backing
+        }
     }
 
     private static func cornerRadius(style: BordersConfig.Style, frameSize: CGSize) -> CGFloat {

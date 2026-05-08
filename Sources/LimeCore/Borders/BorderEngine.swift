@@ -36,7 +36,13 @@ public final class BorderEngine: @unchecked Sendable {
     }
 
     /// Apply a runtime override (from `borders.style` IPC). Triggers a recompute.
+    /// `axFocus` is forwarded out-of-band to the WindowTracker so the focus
+    /// resolver flips between SLS-primary and AX-only mode without waiting
+    /// for the next coalesced batch (focusfx-sf2).
     public func applyStyleRequest(_ req: BordersStyleRequest) {
+        if let axFocus = req.axFocus {
+            tracker.setUseAXFocusOnly(axFocus)
+        }
         queue.async { [weak self] in
             guard let self else { return }
             self.overrides.apply(req)

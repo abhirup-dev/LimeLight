@@ -391,6 +391,40 @@ final class BorderEngineLogicTests: XCTestCase {
         XCTAssertNil(result[.screen(2)])
     }
 
+    // focusfx-sf2: `order` and `hidpi` parsed from JankyBorders args must
+    // round-trip into BorderSpec so the renderer can apply them. Earlier
+    // they were stored in BordersStyleRequest but never made it past the
+    // override merge.
+    func testOrderAndHidpiOverridesPropagateToBorderSpec() {
+        var override = BordersStyleRequest()
+        override.order = .above
+        override.hidpi = true
+        let overrides = BorderRuntimeOverrides(global: override)
+
+        let inputs = BorderEngineLogic.Inputs(
+            windows: [1: w(1, app: "Warp")],
+            focusedWindowID: 1,
+            snapshot: makeSnapshot(),
+            overrides: overrides,
+            primaryDisplayHeight: 1080
+        )
+        let spec = BorderEngineLogic.desiredBorders(inputs)[.window(1)]
+        XCTAssertEqual(spec?.order, .above)
+        XCTAssertEqual(spec?.hidpi, true)
+
+        // Default (no override) — falls back to BordersConfig.default
+        // values, which are `order=below` and `hidpi=false`.
+        let baseInputs = BorderEngineLogic.Inputs(
+            windows: [1: w(1, app: "Warp")],
+            focusedWindowID: 1,
+            snapshot: makeSnapshot(),
+            primaryDisplayHeight: 1080
+        )
+        let baseSpec = BorderEngineLogic.desiredBorders(baseInputs)[.window(1)]
+        XCTAssertEqual(baseSpec?.order, BordersConfig.default.order)
+        XCTAssertEqual(baseSpec?.hidpi, BordersConfig.default.hidpi)
+    }
+
     // MARK: - diff
 
     private func spec(_ id: WindowID, frame: CGRect = CGRect(x: 0, y: 0, width: 100, height: 100)) -> BorderSpec {

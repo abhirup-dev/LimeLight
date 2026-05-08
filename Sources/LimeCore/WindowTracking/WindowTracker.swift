@@ -118,6 +118,12 @@ public final class WindowTracker: @unchecked Sendable {
     /// back to the AX path in `recomputeFocus`.
     private let slsActiveWindow: SLSActiveWindowResolver?
 
+    /// JankyBorders `ax_focus=on` escape hatch (focusfx-sf2). When true,
+    /// `recomputeFocus` skips the SLS branch entirely and runs the AX-only
+    /// fallback — useful on machines where SLS streaming misbehaves or for
+    /// users who prefer AX semantics. Toggled via the `borders.style` IPC.
+    private var useAXFocusOnly: Bool = false
+
     public init(
         server: WindowServerBridge = CGWindowListBridge(),
         ax: AXBridge = RealAXBridge(),
@@ -205,6 +211,21 @@ public final class WindowTracker: @unchecked Sendable {
     private func releaseStickyFocus() {
         // Already on trackerQueue when called from streaming bridge handler.
         stickyFocusInvalidated = true
+    }
+
+    /// Toggle the JankyBorders `ax_focus` escape hatch (focusfx-sf2). When
+    /// `true`, `recomputeFocus` ignores the SLS resolver and runs the AX
+    /// fallback exclusively. Schedules a fast-path focus update so the
+    /// switch takes effect immediately rather than waiting on the next AX
+    /// notification or coalesced refresh.
+    public func setUseAXFocusOnly(_ enabled: Bool) {
+        trackerQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.useAXFocusOnly != enabled else { return }
+            self.useAXFocusOnly = enabled
+            self.stickyFocusInvalidated = true
+            self.recomputeFocus()
+        }
     }
 
     /// AXWindowObserverManager fires one notification per window per change.
@@ -447,7 +468,7 @@ public final class WindowTracker: @unchecked Sendable {
         // flip when it leaves the set (e.g. user closed/raised a
         // different window, in which case SLS reorder fires and we
         // recompute against the new set anyway).
-        if let resolver = slsActiveWindow {
+        if let resolver = slsActiveWindow, !useAXFocusOnly {
             let suitable = resolver.frontWindowIDs()
             if !suitable.isEmpty {
                 let invalidated = stickyFocusInvalidated
