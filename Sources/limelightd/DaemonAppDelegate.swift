@@ -18,6 +18,8 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
         self?.borderEngine?.handleCoalescedBatch(batch)
     }
     private var borderEngine: BorderEngine?
+    @MainActor private let effectEngine = EffectEngine()
+    @MainActor private let popupEngine = PopupEngine()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         mainThreadBudget("daemon.didFinishLaunching") {
@@ -79,6 +81,8 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
         // ConfigStore is value-typed and needs no teardown.
         ipcServer?.stop()
         borderEngine?.tearDown()
+        effectEngine.tearDown()
+        popupEngine.tearDown()
         windowTracker.stop()
     }
 
@@ -169,6 +173,90 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
 
         router.register("config.path") { req in
             IPCResponse.success(id: req.id, result: AnyCodable(store.path))
+        }
+
+        // `trigger`: enqueue a transient effect (focusfx-18.2). Args:
+        //   effect:        string (cometRing|neon|shockwave|line)
+        //   target:        "focused" (default) | int (windowID) — currently
+        //                  always resolved to focused; explicit-id support
+        //                  follows once we have a stable wid round-trip.
+        //   color:         "0xrrggbbaa" (optional, falls back to config default)
+        //   durationMs:    int (optional, defaults to config default)
+        //   aerospaceWorkspace: string (optional, propagated for rule context)
+        // Returns synchronously: { accepted: bool, code: string }.
+        router.register("trigger") { [weak self] req in
+            guard let self else { return IPCResponse.failure(id: req.id, code: "engine_unavailable", message: "no engine") }
+            let args = req.args ?? [:]
+            let effectName = (args["effect"]?.value as? String) ?? self.configStore.currentSnapshot.defaultEffect.name
+            let durationMs = (args["durationMs"]?.value as? Int) ?? self.configStore.currentSnapshot.defaultEffect.durationMs
+            let colorStr = args["color"]?.value as? String
+            let parsedColor: LimeCore.ColorSpec.RGBA
+            if let s = colorStr, case let .solid(rgba) = (try? LimeCore.ColorSpec.parse(s)) ?? .solid(.init(r: 0, g: 0, b: 0, a: 0)) {
+                parsedColor = rgba
+            } else {
+                parsedColor = self.configStore.currentSnapshot.defaultEffect.color
+            }
+            // Resolve target frame from focused window unless caller pinned a wid.
+            var targetFrame: CGRect? = nil
+            if let wid = args["target"]?.value as? Int, let state = tracker.snapshot.first(where: { Int($0.windowID) == wid }) {
+                targetFrame = state.frame
+            } else if let focused = tracker.currentFocusedWindow {
+                targetFrame = focused.frame
+            }
+            guard let frame = targetFrame else {
+                return IPCResponse.failure(id: req.id, code: "no_target", message: "no focused window to attach effect to")
+            }
+            let primaryHeight = NSScreen.main?.frame.height ?? 0
+            let cocoa = BorderEngineLogic.cocoaFrame(from: frame, primaryDisplayHeight: primaryHeight)
+            let trig = EffectTrigger(
+                effect: effectName,
+                frame: frame,
+                cocoaFrame: cocoa,
+                color: parsedColor,
+                durationMs: durationMs
+            )
+            // Hop to main for the actual render — IPC worker returns immediately.
+            let semaphore = DispatchSemaphore(value: 0)
+            var outcome: EffectAccepted = .unknownEffect
+            DispatchQueue.main.async { [effectEngine] in
+                outcome = effectEngine.trigger(trig)
+                semaphore.signal()
+            }
+            _ = semaphore.wait(timeout: .now() + 0.05) // sub-frame budget
+            switch outcome {
+            case .accepted:
+                return IPCResponse.success(id: req.id, result: AnyCodable([
+                    "accepted": AnyCodable(true), "code": AnyCodable("ok"),
+                ] as [String: AnyCodable]))
+            case .effectNotImplemented:
+                return IPCResponse.failure(id: req.id, code: "effect_not_implemented", message: "renderer for '\(effectName)' is not yet wired")
+            case .unknownEffect:
+                return IPCResponse.failure(id: req.id, code: "unknown_effect", message: "unknown effect '\(effectName)'")
+            case .noTarget:
+                return IPCResponse.failure(id: req.id, code: "no_target", message: "target frame is empty")
+            }
+        }
+
+        // `popup`: show a transient banner (focusfx-22.1). Args:
+        //   title, message: strings
+        //   placement:      "topRight" (default) | "topLeft" | "bottomRight"
+        //                   | "bottomLeft" | "center"
+        //   durationMs:     int (defaults to config.popup.durationMs)
+        router.register("popup") { [weak self] req in
+            guard let self else { return IPCResponse.failure(id: req.id, code: "engine_unavailable", message: "no engine") }
+            let args = req.args ?? [:]
+            let cfg = self.configStore.currentSnapshot.popup
+            let title = (args["title"]?.value as? String) ?? "LimeLight"
+            let message = (args["message"]?.value as? String) ?? ""
+            let placement = (args["placement"]?.value as? String) ?? cfg.placement.rawValue
+            let durationMs = (args["durationMs"]?.value as? Int) ?? cfg.durationMs
+            let pop = PopupRequest(title: title, message: message, placement: placement, durationMs: durationMs)
+            DispatchQueue.main.async { [popupEngine] in
+                _ = popupEngine.show(pop)
+            }
+            return IPCResponse.success(id: req.id, result: AnyCodable([
+                "accepted": AnyCodable(true),
+            ] as [String: AnyCodable]))
         }
 
         // `perf`: cached, cheap diagnostics dump (focusfx-30.1). Reads only
